@@ -11,7 +11,8 @@ KURULUM
      pip install ultralytics
      yolo export model=yolov8n.pt format=onnx imgsz=320 opset=12
    Çıkan yolov8n.onnx dosyasını bu HTML ile AYNI klasöre koy.
-   (Kendi insan/silah modelin varsa onu kullan; aşağıda CONFIG.CUSTOM_CLASSES'ı doldur.)
+   Özel tehdit modeli (gun/knife/threat...): sayfadaki "Model" düğmesiyle kendi .onnx dosyanı seç.
+   Sınıf adları modelin içinden otomatik okunur; elle tanımlamak için CONFIG.CUSTOM_CLASSES / CLASS_MAP.
 2) Kamera için sayfa HTTPS veya localhost üzerinden açılmalı (ör. GitHub Pages).
    Dosyayı doğrudan açarsan model otomatik okunamaz; sayfadaki "Model seç" ile .onnx'i seç.
 3) Model bir kez yüklenince tarayıcıda (IndexedDB) saklanır, sonraki açılışlarda tekrar istenmez.
@@ -56,6 +57,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);overflow:hidden;
 .conf input{flex:1;accent-color:var(--green)}
 .conf output{width:3ch;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
 
+.alarm{position:fixed;inset:0;pointer-events:none;opacity:0;
+  box-shadow:inset 0 0 0 5px var(--red),inset 0 0 70px rgba(255,71,87,.5)}
+.alarm.on{opacity:1;animation:blink .8s ease-in-out infinite alternate}
+@keyframes blink{from{opacity:.35}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.alarm.on{animation:none}}
+.banner.threat{background:rgba(255,71,87,.92);border-color:var(--red);color:#fff}
+.trk{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+.trk b{color:var(--text);font-size:14px}
+.info{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .btn{display:inline-block;padding:9px 14px;border-radius:12px;border:1px solid var(--line);
   background:rgba(52,245,160,.14);color:var(--green);font:600 13px system-ui,sans-serif;cursor:pointer}
 .btn.ghost{background:transparent;color:var(--text)}
@@ -73,6 +83,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);overflow:hidden;
 <canvas id="ov"></canvas>
 <div class="scan" id="scan"></div>
 
+<div class="alarm" id="alarm"></div>
 <div class="banner glass" id="banner">🟡 Başlatılıyor…</div>
 
 <section class="panel glass" id="panel" hidden>
@@ -92,10 +103,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);overflow:hidden;
     <div class="stat"><b id="cnt">0</b><span>nesne</span></div>
     <label class="btn ghost" for="file">Model</label>
   </div>
+  <div class="trk">
+    <button class="btn" id="trk" aria-pressed="true">Takip: Açık</button>
+    <span><b id="tAct">0</b> aktif</span><span><b id="tCoast">0</b> tahmin</span><span><b id="tIds">0</b> ID</span>
+  </div>
   <div class="conf">Eşik
     <input id="conf" type="range" min="10" max="90" value="35">
     <output id="confV">35</output>%
   </div>
+  <div class="info" id="info">Model bekleniyor</div>
 </section>
 
 <script>
@@ -108,7 +124,11 @@ const CONFIG = {
   INPUT_CANDIDATES: [320, 416, 480, 512, 640], // modelin kabul ettiği boyut otomatik bulunur
   CONF: 0.35, IOU: 0.45, MAX_DET: 50,
   CUSTOM_CLASSES: [],                          // ör. ['insan','silah'] (kendi modelin için)
-  DANGER: ['knife','scissors','gun','pistol','rifle','weapon','firearm','handgun','silah','bıçak','tabanca'],
+  // CUSTOM_CLASSES örn: ['person', {name:'gun', label:'Silah', threat:true}, 'knife']  (sıra = modelin sınıf no'su)
+  // Boşsa adlar modelin içinden (Ultralytics .onnx) okunur; o da yoksa COCO kullanılır.
+  CLASS_MAP: {},   // ad -> {label, threat}. Örn: { pistol:{label:'Tabanca', threat:true} }
+  THREATS: ['knife','scissors','gun','pistol','rifle','weapon','firearm','handgun','threat','silah','bıçak','tabanca','tüfek','tehdit'],
+  TRACK: { ENABLED:true, MATCH_IOU:.25, ALPHA:.6, BETA:.2, SIZE_ALPHA:.5, CONFIRM_HITS:2, TTL_MS:800, MAX_COAST_MS:250, RENDER_TAU_MS:70 },
 };
 const ORT_SOURCES = [
   { js:'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/ort.min.js',
@@ -121,15 +141,24 @@ const COCO = ['person','bicycle','car','motorcycle','airplane','bus','train','tr
 const $ = s => document.querySelector(s);
 const video = $('#cam'), cv = $('#ov'), ctx = cv.getContext('2d');
 let session = null, inputName = '', outputName = '';
-let S = 320, nc = 80, layout = 'cf', names = COCO, off, octx, input;
+let S = 320, nc = 80, layout = 'cf', classes = [], off, octx, input;
 let stream = null, running = false;
 
 /* ================== ARAYÜZ ================== */
 const TEXT = { load:'🟡 Model yükleniyor…', wait:'⚪ Model bekleniyor',
   active:'🟢 YOLOv8 Yapay Zeka Taraması Aktif', err:'🔴 Hata' };
+let curText = '', alarmKey = '';
 function setStatus(k, custom){
-  $('#banner').textContent = custom || TEXT[k];
+  curText = custom || TEXT[k]; alarmKey = '';
+  $('#banner').textContent = curText; $('#banner').classList.remove('threat'); $('#alarm').classList.remove('on');
   $('#scan').classList.toggle('on', k === 'active');
+}
+function setAlarm(labels){                     // tehdit varsa kırmızı alarm, yoksa normal durum
+  const key = labels.join('|'); if (key === alarmKey) return;
+  const was = alarmKey !== ''; alarmKey = key;
+  $('#banner').textContent = key ? '🔴 TEHDİT: ' + labels.join(', ') : curText;
+  $('#banner').classList.toggle('threat', !!key); $('#alarm').classList.toggle('on', !!key);
+  if (key && !was && navigator.vibrate) navigator.vibrate([150, 80, 150]);
 }
 function showPanel(title, msg, {model=false, camera=false} = {}){
   $('#pTitle').textContent = title; $('#pMsg').textContent = msg;
@@ -200,8 +229,8 @@ async function startSession(buf, label, persist){
     S = s;
     layout = dims[1] < dims[2] ? 'cf' : 'rows';  // [1,4+nc,N] veya [1,N,4+nc]
     nc = (layout === 'cf' ? dims[1] : dims[2]) - 4;
-    names = CONFIG.CUSTOM_CLASSES.length === nc ? CONFIG.CUSTOM_CLASSES
-          : nc === 80 ? COCO : Array.from({ length: nc }, (_, i) => 'sınıf ' + i);
+    classes = buildClasses(buf); Tracker.reset();
+    $('#info').textContent = `${label} · ${nc} sınıf · ${S}px` + (classes.some(c => c.threat) ? ' · tehdit sınıfı var' : '');
     off = document.createElement('canvas'); off.width = off.height = S;
     octx = off.getContext('2d', { willReadFrequently: true });
     input = new Float32Array(3 * S * S);
@@ -300,36 +329,132 @@ async function detect(){
     x2: cl((b.x2 - px) / sx, vw), y2: cl((b.y2 - py) / sy, vh) }));
 }
 
-/* ================== ÇİZİM ================== */
-function draw(dets){
+/* ================== SINIFLAR ================== */
+function readModelNames(buf){          // Ultralytics .onnx içindeki {0: 'person', ...} bilgisi
+  try {
+    const txt = new TextDecoder().decode(new Uint8Array(buf, Math.max(0, buf.byteLength - 65536)));
+    const m = txt.match(/\{\s*0:\s*['"][^}]*\}/); if (!m) return null;
+    const out = [], re = /(\d+):\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/g; let r;
+    while ((r = re.exec(m[0]))) out[+r[1]] = r[2] !== undefined ? r[2] : r[3];
+    return out.length ? out : null;
+  } catch(e){ return null; }
+}
+function buildClasses(buf){
+  const cc = CONFIG.CUSTOM_CLASSES, meta = readModelNames(buf);
+  if (cc.length && cc.length !== nc) console.warn(`CUSTOM_CLASSES (${cc.length}) model sınıf sayısıyla (${nc}) uyuşmuyor.`);
+  const base = cc.length === nc ? cc : meta && meta.length === nc ? meta : nc === 80 ? COCO : [];
+  return Array.from({ length: nc }, (_, i) => {
+    const e = typeof base[i] === 'object' ? base[i] : { name: base[i] || 'sınıf ' + i };
+    const key = String(e.name).toLowerCase(), m = CONFIG.CLASS_MAP[key] || {};
+    return { name: e.name, label: e.label || m.label || e.name,
+             threat: e.threat ?? m.threat ?? CONFIG.THREATS.includes(key) };
+  });
+}
+
+/* ================== TAKİP & YUMUŞATMA ================== */
+// Alfa-beta filtresi (basit Kalman benzeri) + açgözlü IoU eşleştirme.
+// Kısa süreli kayıplarda iz, hızıyla ilerletilip kesikli çizgiyle gösterilir (TTL_MS kadar).
+const box = (x, y, w, h) => ({ x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 });
+const Tracker = {
+  tracks: [], nextId: 1,
+  reset(){ this.tracks = []; },
+  update(dets, t){
+    const T = CONFIG.TRACK, tr = this.tracks, pairs = [];
+    for (const k of tr){ const dt = Math.min(.5, (t - k.t) / 1000); k.px = k.cx + k.vx * dt; k.py = k.cy + k.vy * dt; }
+    dets.forEach((d, di) => tr.forEach((k, ki) => {
+      if (k.cls !== d.cls) return;
+      const v = iou(box(k.px, k.py, k.w, k.h), d);
+      if (v >= T.MATCH_IOU) pairs.push([v, di, ki]);
+    }));
+    pairs.sort((a, b) => b[0] - a[0]);
+    const du = new Set(), ku = new Set();
+    for (const [, di, ki] of pairs){
+      if (du.has(di) || ku.has(ki)) continue; du.add(di); ku.add(ki);
+      const d = dets[di], k = tr[ki], dt = Math.max(.03, Math.min(.5, (t - k.t) / 1000));
+      const rx = (d.x1 + d.x2) / 2 - k.px, ry = (d.y1 + d.y2) / 2 - k.py;
+      k.cx = k.px + T.ALPHA * rx; k.cy = k.py + T.ALPHA * ry;
+      k.vx += T.BETA * rx / dt; k.vy += T.BETA * ry / dt;
+      k.w += T.SIZE_ALPHA * (d.x2 - d.x1 - k.w); k.h += T.SIZE_ALPHA * (d.y2 - d.y1 - k.h);
+      k.score = k.score * .6 + d.score * .4;
+      k.t = k.seen = t; k.hits++; k.misses = 0; k.confirmed = k.confirmed || k.hits >= T.CONFIRM_HITS;
+    }
+    tr.forEach((k, ki) => { if (ku.has(ki)) return;        // eşleşmeyen iz: tahminle ilerle
+      k.cx = k.px; k.cy = k.py; k.vx *= .85; k.vy *= .85; k.t = t; k.misses++; });
+    dets.forEach((d, di) => { if (du.has(di)) return;      // yeni aday iz
+      tr.push({ id: this.nextId++, cls: d.cls, score: d.score, cx: (d.x1 + d.x2) / 2, cy: (d.y1 + d.y2) / 2,
+        w: d.x2 - d.x1, h: d.y2 - d.y1, vx: 0, vy: 0, t, seen: t, hits: 1, misses: 0,
+        confirmed: T.CONFIRM_HITS <= 1, d: null }); });
+    const alive = tr.filter(k => k.misses === 0 || (k.confirmed && t - k.seen <= T.TTL_MS))
+                    .sort((a, b) => b.hits - a.hits);
+    this.tracks = alive.filter((k, i) => !alive.slice(0, i).some(q =>   // çift izleri ele
+      q.cls === k.cls && iou(box(q.cx, q.cy, q.w, q.h), box(k.cx, k.cy, k.w, k.h)) > .7));
+  },
+  view(ts, dtR){                          // her ekran karesinde akıcı (interpolasyonlu) kutular
+    const T = CONFIG.TRACK, a = 1 - Math.exp(-dtR / T.RENDER_TAU_MS), out = [];
+    for (const k of this.tracks){
+      if (!k.confirmed) continue;
+      const e = Math.min(ts - k.t, T.MAX_COAST_MS) / 1000, x = k.cx + k.vx * e, y = k.cy + k.vy * e;
+      if (!k.d) k.d = { x, y, w: k.w, h: k.h };
+      const d = k.d; d.x += (x - d.x) * a; d.y += (y - d.y) * a; d.w += (k.w - d.w) * a; d.h += (k.h - d.h) * a;
+      out.push({ ...box(d.x, d.y, d.w, d.h), id: k.id, cls: k.cls, score: k.score, coast: k.misses > 0,
+        alpha: k.misses ? Math.max(.35, 1 - (ts - k.seen) / T.TTL_MS) : 1 });
+    }
+    return out;
+  },
+};
+$('#trk').addEventListener('click', e => {
+  const on = CONFIG.TRACK.ENABLED = !CONFIG.TRACK.ENABLED;
+  e.target.textContent = 'Takip: ' + (on ? 'Açık' : 'Kapalı');
+  e.target.classList.toggle('ghost', !on); e.target.setAttribute('aria-pressed', on);
+});
+
+/* ================== ÇİZİM & DÖNGÜLER ================== */
+let fps = 0, lastMs = 0, lastUi = 0, lastTs = 0, rawList = [];
+function draw(list){
   const cw = cv.clientWidth, ch = cv.clientHeight, vw = video.videoWidth, vh = video.videoHeight;
   const k = Math.max(cw / vw, ch / vh), ox = (cw - vw * k) / 2, oy = (ch - vh * k) / 2; // object-fit: cover
   ctx.clearRect(0, 0, cw, ch);
   ctx.lineJoin = 'round'; ctx.font = '600 13px system-ui,sans-serif';
-  for (const d of dets){
-    const name = names[d.cls], danger = CONFIG.DANGER.includes(String(name).toLowerCase());
-    const col = danger ? '#ff4757' : '#34f5a0';
+  for (const d of list){
+    const c = classes[d.cls] || { label: '?', threat: false }, col = c.threat ? '#ff4757' : '#34f5a0';
     const x = d.x1 * k + ox, y = d.y1 * k + oy, w = (d.x2 - d.x1) * k, h = (d.y2 - d.y1) * k;
-    if (danger){ ctx.fillStyle = 'rgba(255,71,87,.14)'; ctx.fillRect(x, y, w, h); }
-    ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.strokeRect(x, y, w, h);
-    const label = name + ' ' + Math.round(d.score * 100) + '%', tw = ctx.measureText(label).width + 12;
-    const ly = y >= 22 ? y - 22 : y;
+    ctx.globalAlpha = d.alpha;
+    if (c.threat){ ctx.fillStyle = 'rgba(255,71,87,.14)'; ctx.fillRect(x, y, w, h); }
+    ctx.strokeStyle = col; ctx.lineWidth = c.threat ? 4 : 3; ctx.setLineDash(d.coast ? [8, 6] : []);
+    ctx.strokeRect(x, y, w, h); ctx.setLineDash([]);
+    const label = (d.id ? '#' + d.id + ' ' : '') + c.label + ' ' + Math.round(d.score * 100) + '%';
+    const tw = ctx.measureText(label).width + 12, ly = y >= 22 ? y - 22 : y;
     ctx.fillStyle = col; ctx.fillRect(x, ly, tw, 22);
-    ctx.fillStyle = danger ? '#fff' : '#04140c'; ctx.fillText(label, x + 6, ly + 15);
+    ctx.fillStyle = c.threat ? '#fff' : '#04140c'; ctx.fillText(label, x + 6, ly + 15);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function render(ts){                      // ekran hızında çizim (çıkarımdan bağımsız)
+  requestAnimationFrame(render);
+  if (!session || !stream || video.readyState < 2 || !video.videoWidth){
+    ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight); return;
+  }
+  const on = CONFIG.TRACK.ENABLED, list = on ? Tracker.view(ts, Math.min(100, ts - lastTs)) : rawList;
+  lastTs = ts; draw(list);
+  setAlarm([...new Set(list.filter(d => classes[d.cls] && classes[d.cls].threat).map(d => classes[d.cls].label))]);
+  if (ts - lastUi > 400){ lastUi = ts;
+    const conf = Tracker.tracks.filter(k => k.confirmed), coast = conf.filter(k => k.misses).length;
+    $('#fps').textContent = fps.toFixed(0); $('#ms').textContent = lastMs.toFixed(0); $('#cnt').textContent = list.length;
+    $('#tAct').textContent = on ? conf.length - coast : '–'; $('#tCoast').textContent = on ? coast : '–';
+    $('#tIds').textContent = Tracker.nextId - 1;
   }
 }
 
-let fps = 0, lastUi = 0;
-async function loop(){
+async function loop(){                    // çıkarım döngüsü
   if (running) return; running = true;
   while (running){
     if (session && video.readyState >= 2 && !document.hidden){
       try {
         const t0 = performance.now(), dets = await detect(), dt = performance.now() - t0;
-        draw(dets);
-        fps = fps ? fps * .8 + (1000 / dt) * .2 : 1000 / dt;
-        if (t0 - lastUi > 400){ lastUi = t0;
-          $('#fps').textContent = fps.toFixed(0); $('#ms').textContent = dt.toFixed(0); $('#cnt').textContent = dets.length; }
+        Tracker.update(dets, t0);
+        rawList = dets.map(d => ({ ...d, id: 0, coast: false, alpha: 1 }));
+        lastMs = dt; fps = fps ? fps * .8 + (1000 / dt) * .2 : 1000 / dt;
       } catch(e){
         console.error(e); running = false; setStatus('err', '🔴 Çıkarım hatası'); return;
       }
@@ -345,7 +470,7 @@ $('#conf').addEventListener('input', e => {
 addEventListener('resize', resize);
 addEventListener('orientationchange', () => setTimeout(resize, 300));
 addEventListener('pagehide', () => stream && stream.getTracks().forEach(t => t.stop()));
-resize(); ensureOrt().catch(() => {}); startCamera(); initModel();
+requestAnimationFrame(render); resize(); ensureOrt().catch(() => {}); startCamera(); initModel();
 })();
 </script>
 </body>
