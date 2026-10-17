@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070c11">
+<title>YOLOv8 Nesne Tespiti</title>
+<!--
+KURULUM
+1) Modeli üret (bilgisayarda bir kez):
+     pip install ultralytics
+     yolo export model=yolov8n.pt format=onnx imgsz=320 opset=12
+   Modeli bu HTML ile AYNI klasöre koy; sayfa CONFIG.MODEL_URL dosyasını otomatik yükler.
+   (Aynı adla model değiştirdiysen önbelleği atlamak için sayfayı ?reset ile aç.)
+   Özel tehdit modeli (gun/knife/threat...): sayfadaki "Model" düğmesiyle kendi .onnx dosyanı seç.
+   Sınıf adları modelin içinden otomatik okunur; elle tanımlamak için CONFIG.CUSTOM_CLASSES / CLASS_MAP.
+   Adlar modelde yoksa aynı anda bir etiket dosyası (.txt satır satır veya .json) da seç.
+5) Mesh: aynı sayfa adresini tüm cihazlarda aç; cihazlar kendiliğinden bulunur ve Kamera 1, 2, 3... diye numaralanır (gizli oda için ?room=KOD).
+   Keşif için internet + MQTT broker gerekir; video ve alarm verisi cihazlar arasında doğrudan (WebRTC) akar. Gizli test: kamera adına 5 hızlı dokun.
+2) Kamera için sayfa HTTPS veya localhost üzerinden açılmalı (ör. GitHub Pages).
+   Dosyayı doğrudan açarsan model otomatik okunamaz; sayfadaki "Model seç" ile .onnx'i seç.
+3) Model bir kez yüklenince tarayıcıda (IndexedDB) saklanır, sonraki açılışlarda tekrar istenmez.
+4) Tam çevrimdışı çalışma: ONNX Runtime dosyalarını (ort.min.js ve ort-wasm*.wasm) indirip
+   "ort/" klasörüne koy; CDN'e ulaşılamazsa sayfa otomatik olarak oradan yükler.
+-->
+<style>
+:root{
+  --bg:#070c11; --glass:rgba(9,15,21,.74); --line:rgba(150,185,210,.18);
+  --text:#e9f1f6; --mute:#8fa3b3; --green:#34f5a0; --red:#ff4757;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--text);overflow:hidden;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#cam,#ov{position:fixed;inset:0;width:100%;height:100%}
+#cam{object-fit:cover;background:var(--bg)}
+#ov{pointer-events:none}
+
+
+.glass{background:var(--glass);border:1px solid var(--line);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.banner{position:fixed;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 12px);
+  max-width:calc(100% - 24px);padding:9px 16px;border-radius:999px;font-size:14px;font-weight:600;
+  letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.hud{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);
+  padding:12px 14px;border-radius:18px;display:grid;gap:10px}
+.stats{display:flex;align-items:center;gap:18px;font-variant-numeric:tabular-nums}
+.stat b{font-size:20px;font-weight:700}
+.stat span{font-size:12px;color:var(--mute);margin-left:4px}
+.stats .btn{margin-left:auto}
+.conf{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--mute)}
+.conf input{flex:1;accent-color:var(--green)}
+.conf output{width:3ch;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
+
+.alarm{position:fixed;inset:0;pointer-events:none;opacity:0;
+  box-shadow:inset 0 0 0 5px var(--red),inset 0 0 70px rgba(255,71,87,.5)}
+.alarm.on{opacity:1;animation:blink .8s ease-in-out infinite alternate}
+@keyframes blink{from{opacity:.35}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.alarm.on{animation:none}}
+.banner.threat{background:rgba(255,71,87,.92);border-color:var(--red);color:#fff}
+.trk{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+.trk b{color:var(--text);font-size:14px}
+.info{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.banner.warn{background:rgba(255,176,46,.92);border-color:#ffb02e;color:#1a1000}
+.stage{display:flex;gap:6px;font-size:12px;font-weight:600}
+.stage span{flex:1;text-align:center;padding:6px 4px;border-radius:10px;border:1px solid var(--line);color:var(--mute);white-space:nowrap}
+.stage span.on{color:var(--green);border-color:var(--green);background:rgba(52,245,160,.1)}
+.stage span.on[data-s="1"]{color:#ffb02e;border-color:#ffb02e;background:rgba(255,176,46,.12)}
+.stage span.on[data-s="2"]{color:#fff;border-color:var(--red);background:var(--red)}
+.pip{position:fixed;right:12px;top:calc(env(safe-area-inset-top,0px) + 62px);width:min(42vw,190px);padding:6px;
+  border-radius:14px;border-color:var(--red);display:none;gap:6px;box-shadow:0 0 24px rgba(255,71,87,.35)}
+.pip.show{display:grid}
+.pip canvas{width:100%;max-height:34vh;object-fit:contain;border-radius:9px;background:#000}
+.pip p{font-size:11px;line-height:1.35}.pip b{color:var(--red);font-size:12px}
+.pip i{display:block;height:3px;border-radius:2px;background:var(--red);transform-origin:left;animation:drain var(--dur,5s) linear forwards}
+@keyframes drain{to{transform:scaleX(0)}}
+.camhud{position:fixed;left:12px;top:calc(env(safe-area-inset-top,0px) + 62px);padding:7px 10px;border-radius:12px;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}
+.camhud b{font-size:13px;user-select:none}.rec{color:var(--red);animation:rec 1.2s steps(2) infinite}
+@keyframes rec{50%{opacity:.2}}
+.tools{display:flex;gap:6px;flex-wrap:wrap}.tools .btn{padding:7px 10px;font-size:12px}
+#cam.night{filter:brightness(1.8) contrast(1.3) saturate(.6)}
+.rmt{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 62px);z-index:6;padding:12px;border-radius:16px;
+  background:rgba(190,24,40,.94);border:1px solid #ff8a95;display:grid;gap:8px}
+.rmt[hidden],.sheet[hidden]{display:none}
+.rmt b{font-size:16px}.rmt .r2{display:flex;gap:10px;font-size:12px;align-items:flex-start}.rmt img{width:96px;border-radius:8px;background:#000}
+.sheet{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:7;width:min(92vw,400px);max-height:80vh;overflow:auto;
+  padding:16px;border-radius:18px;display:grid;gap:10px;font-size:13px}
+.sheet h2{font-size:16px;display:flex;justify-content:space-between;align-items:center}
+.sheet input,.sheet textarea{width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.35);color:var(--text);font:12px ui-monospace,monospace}
+.sheet .row{display:flex;flex-wrap:wrap;gap:6px}
+.ev{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:12px}.ev img{width:64px;height:64px;object-fit:cover;border-radius:8px;background:#000}.ev div{white-space:pre-line}
+.hud{bottom:calc(env(safe-area-inset-bottom,0px) + 64px);max-height:62vh;overflow:auto}.hud[hidden]{display:none}
+.gear{position:fixed;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);width:44px;height:44px;padding:0;border-radius:50%;font-size:18px;color:var(--text);cursor:pointer}
+.sign{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);padding:6px 14px;border-radius:999px;
+  font-size:11px;letter-spacing:.04em;color:var(--mute);text-decoration:none;white-space:nowrap;background:rgba(9,15,21,.5)}
+.toast{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 64px);padding:10px 14px;border-radius:14px;font-size:12px;line-height:1.5;z-index:5}
+.btn:not(.ghost){border-color:rgba(255,255,255,.35)}
+.cc{position:fixed;inset:0;z-index:8;background:#05080c;display:flex;flex-direction:column}.cc[hidden]{display:none}
+.cc header{display:flex;gap:14px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);font-size:13px}.cc header b{flex:1}
+.ccMain{flex:1;display:flex;min-height:0}
+.ccGrid{flex:1;display:flex;flex-wrap:wrap;gap:6px;padding:6px;align-content:flex-start;overflow:auto}#ccEmpty{margin:auto;color:var(--mute);font-size:14px}
+.tile{position:relative;flex:1 1 44%;height:44vh;background:#000;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.tile video,.tile canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.tile .cap{position:absolute;left:8px;bottom:6px;font-size:12px;font-weight:600;text-shadow:0 1px 3px #000}
+.cc.alarm .tile{flex:1 1 150px;height:92px}.cc.alarm .tile.hot{flex:1 1 100%;height:58vh;border:2px solid var(--red)}
+.c112{width:min(42vw,420px);padding:12px;display:grid;gap:8px;align-content:start;overflow:auto;background:#0a1016;border-left:2px solid var(--red);font-size:13px}
+.c112[hidden]{display:none}.c112 h3{font-size:14px;color:#ff8a95}.c112 small{color:var(--mute);line-height:1.4}
+.c112 input,.c112 textarea{width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.4);color:var(--text);font:12px ui-monospace,monospace}
+.c112 .row{display:flex;flex-wrap:wrap;gap:6px}.c112 a.btn{text-decoration:none}
+.btn{display:inline-block;padding:9px 14px;border-radius:12px;border:1px solid var(--line);
+  background:rgba(255,255,255,.1);color:var(--text);font:600 13px system-ui,sans-serif;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--text)}
+
+.panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(88vw,360px);
+  padding:22px;border-radius:20px;display:grid;gap:12px;text-align:left}
+.panel[hidden]{display:none}
+.panel h2{font-size:18px}
+.panel p{font-size:14px;line-height:1.5;color:var(--mute)}
+.panel .row{display:flex;flex-wrap:wrap;gap:8px}
+</style>
+</head>
+<body>
+<video id="cam" autoplay muted playsinline></video>
+<canvas id="ov"></canvas>
+
+<div class="alarm" id="alarm"></div>
+<aside class="pip glass" id="pip"><canvas id="pipCv"></canvas><p><b>Kesin tehdit</b><br><span id="pipTxt"></span></p><i></i></aside>
+<div class="camhud glass"><b id="camName">KAM-1</b> <span class="rec">● REC</span> <span id="clock"></span><br><span id="gps">📍 GPS bekleniyor</span></div>
+<aside class="rmt" id="rmt" hidden><b id="rmtTxt"></b><div class="r2"><img id="rmtImg" alt=""><span id="rmtSub"></span></div><button class="btn ghost" id="rmtX">Kapat</button></aside>
+<section class="sheet glass" id="net" hidden>
+  <h2>📡 Mesh ağı <button class="btn ghost" data-close>Kapat</button></h2>
+  <input id="locIn" maxlength="60" placeholder="Bu kameranın konumu (örn. 2. Kat Kuzey Koridoru)">
+  <input id="netCode" maxlength="16" placeholder="Ağ kodu">
+  <div class="row"><button class="btn" id="netGo">Bu kodla bağlan</button><button class="btn ghost" id="netCopy">Davet bağlantısı</button></div>
+  <div id="netSt">Bağlanıyor…</div><div id="peerList"></div>
+  <div>Diğer cihazları davet bağlantısıyla (veya aynı ağ koduyla) aç: cihazlar kendiliğinden bulunur ve Kamera 1, 2, 3… diye numaralanır.</div>
+</section>
+<section class="cc" id="cc" hidden>
+  <header><b>🖥️ KOMUTA MERKEZİ</b><span id="ccInfo">0 kamera</span><span id="ccClock"></span><button class="btn ghost" id="ccX">Çık</button></header>
+  <div class="ccMain"><div class="ccGrid" id="ccGrid"><div id="ccEmpty">Bağlı kamera yok. Diğer cihazları aynı ağ koduyla aç.</div></div>
+    <aside class="c112" id="c112" hidden>
+      <h3>🚨 112 ACİL DURUM BİLDİRİMİ <span id="ccTest"></span></h3>
+      <input id="ccAddr" placeholder="Bina adresi (yeni bildirime eklenir)">
+      <textarea id="ccMsg" rows="14"></textarea>
+      <div class="row"><button class="btn" id="ccCopy">📋 Kopyala</button><a class="btn" id="ccCall" href="tel:112">📞 112'yi ara</a><button class="btn ghost" id="ccEnd">Alarmı kapat</button></div>
+      <small>Bu metin taslaktır, serbestçe düzenlenebilir. Sistem 112'yi kendiliğinden aramaz veya mesaj göndermez; aramadan önce görüntüyü doğrula.</small>
+    </aside></div>
+</section>
+<section class="sheet glass" id="hist" hidden>
+  <h2>📋 Olay Geçmişi <button class="btn ghost" data-close>Kapat</button></h2>
+  <div id="hl"></div><button class="btn ghost" id="hclr">Günlüğü temizle</button>
+</section>
+<div class="banner glass" id="banner">🟡 Başlatılıyor…</div>
+
+<section class="panel glass" id="panel" hidden>
+  <h2 id="pTitle"></h2>
+  <p id="pMsg"></p>
+  <div class="row">
+    <label class="btn" for="file" id="pickBtn">Model seç (.onnx + etiket .txt)</label>
+    <button class="btn ghost" id="retry">Kamerayı yeniden dene</button>
+  </div>
+</section>
+<input id="file" type="file" accept=".onnx,.txt,.json,application/octet-stream" multiple hidden>
+
+<button class="gear glass" id="gear" aria-label="Panel" aria-expanded="false">⚙️</button>
+<div class="toast glass" id="toast" hidden></div>
+<a class="sign glass" href="https://instagram.com/dgnemre_04" target="_blank" rel="noopener noreferrer">Developed by: @dgnemre_04</a>
+<section class="hud glass" id="hud" hidden>
+  <div class="stage" id="stage"><span data-s="0" class="on">Tarama</span><span data-s="1" id="stV">Doğrulama</span><span data-s="2">Alarm</span></div>
+  <div class="stats">
+    <div class="stat"><b id="fps">0</b><span>FPS</span></div>
+    <div class="stat"><b id="ms">0</b><span>ms</span></div>
+    <div class="stat"><b id="cnt">0</b><span>nesne</span></div>
+    
+  </div>
+  <div class="trk">
+    <button class="btn" id="trk" aria-pressed="true">Takip: Açık</button>
+    <span><b id="tAct">0</b> aktif</span><span><b id="tCoast">0</b> tahmin</span><span><b id="tIds">0</b> ID</span>
+  </div>
+  <div class="tools">
+    <button class="btn ghost" id="mic">🎙 Ses: Kapalı</button><button class="btn ghost" id="nv" disabled>🌙 Gece: Otomatik (Kapalı)</button>
+    <button class="btn ghost" id="netb">📡 Ağ: 0</button><button class="btn ghost" id="hb">📋 Geçmiş</button><button class="btn ghost" id="ccb">🖥️ Komuta Merkezi Modu</button>
+  </div>
+  <div class="conf">Eşik
+    <input id="conf" type="range" min="10" max="90" value="35">
+    <output id="confV">35</output>%
+  </div>
+  <div class="info" id="info">Model bekleniyor</div>
+</section>
+
+<script>
+(() => {
+'use strict';
+
+/* ================== AYARLAR ================== */
+const CONFIG = {
+  MODEL_URL: './4985e860b9f42d83ff052c2c851b2bddc5d98412c8c351733582abd9fd6e182f.onnx',
+  INPUT_CANDIDATES: [320, 416, 480, 512, 640], // modelin kabul ettiği boyut otomatik bulunur
+  CONF: 0.35, IOU: 0.45, MAX_DET: 50,
+  CUSTOM_CLASSES: [],                          // ör. ['insan','silah'] (kendi modelin için)
+  // CUSTOM_CLASSES örn: ['person', {name:'gun', label:'Silah', threat:true}, 'knife']  (sıra = modelin sınıf no'su)
+  // Boşsa adlar modelin içinden (Ultralytics .onnx) okunur; o da yoksa COCO kullanılır.
+  CLASS_MAP: {},   // ad -> {label, threat}. Örn: { pistol:{label:'Tabanca', threat:true} }
+  THREATS: ['gun','pistol','rifle','knife','handgun','firearm','weapon','threat','silah','bıçak','tabanca','tüfek','tehdit'],
+  SAFE: ['scissors','fork','spoon','toothbrush','remote','cell phone'],   // ASLA alarm vermez (THREATS/CUSTOM_CLASSES'a yazılsa bile)
+  MESH: { BROKER: 'wss://broker.emqx.io:8084/mqtt', ICE: [{ urls: 'stun:stun.l.google.com:19302' }] },  // özel MQTT broker önerilir
+  VERIFY: { FRAMES: 2, CONF: .70, HOLD_MS: 3000, SNAP_MS: 5000 },        // FRAMES: 2-3 ardışık kare, CONF: güven eşiği
+  TRACK: { ENABLED:true, MATCH_IOU:.25, ALPHA:.6, BETA:.2, SIZE_ALPHA:.5, CONFIRM_HITS:2, TTL_MS:800, MAX_COAST_MS:250, RENDER_TAU_MS:70 },
+};
+const ORT_SOURCES = [
+  { js:'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/ort.min.js',
+    wasm:'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/' },
+  { js:'./ort/ort.min.js', wasm:'./ort/' },       // çevrimdışı yedek
+];
+const COCO = ['person','bicycle','car','motorcycle','airplane','bus','train','truck','boat','traffic light','fire hydrant','stop sign','parking meter','bench','bird','cat','dog','horse','sheep','cow','elephant','bear','zebra','giraffe','backpack','umbrella','handbag','tie','suitcase','frisbee','skis','snowboard','sports ball','kite','baseball bat','baseball glove','skateboard','surfboard','tennis racket','bottle','wine glass','cup','fork','knife','spoon','bowl','banana','apple','sandwich','orange','broccoli','carrot','hot dog','pizza','donut','cake','chair','couch','potted plant','bed','dining table','toilet','tv','laptop','mouse','remote','keyboard','cell phone','microwave','oven','toaster','sink','refrigerator','book','clock','vase','scissors','teddy bear','hair drier','toothbrush'];
+
+/* ================== DURUM ================== */
+const $ = s => document.querySelector(s);
+const video = $('#cam'), cv = $('#ov'), ctx = cv.getContext('2d');
+let session = null, inputName = '', outputName = '';
+let S = 320, nc = 80, layout = 'cf', classes = [], off, octx, input;
+let stream = null, running = false;
+
+/* ================== ARAYÜZ ================== */
+const TEXT = { load:'🟡 Model yükleniyor…', wait:'⚪ Model bekleniyor',
+  active:'🟢 YOLOv8 Yapay Zeka Taraması Aktif', err:'🔴 Hata' };
+let toastT = 0;
+function toast(msg, ms = 8000){ const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
+let curText = '', thKey = '';
+function setStatus(k, custom){
+  curText = custom || TEXT[k]; thKey = '';
+  const b = $('#banner'); b.textContent = curText; b.classList.remove('threat', 'warn'); $('#alarm').classList.remove('on');
+}
+function setThreat(level, text = '', prog = ''){   // 0: tarama, 1: doğrulanıyor, 2: kesin tehdit
+  const key = level + '|' + text + '|' + prog; if (key === thKey) return;
+  const was = thKey.startsWith('2|'); thKey = key;
+  const b = $('#banner');
+  b.textContent = level === 2 ? '🔴 TEHDİT ONAYLANDI: ' + text : level === 1 ? '🟠 Olası tehdit: ' + text + ' — doğrulanıyor ' + prog : curText;
+  b.classList.toggle('warn', level === 1); b.classList.toggle('threat', level === 2);
+  $('#alarm').classList.toggle('on', level === 2);
+  document.querySelectorAll('#stage span').forEach(e => e.classList.toggle('on', +e.dataset.s === level));
+  $('#stV').textContent = level === 1 ? 'Doğrulama ' + prog : 'Doğrulama';
+}
+function showPanel(title, msg, {model=false, camera=false} = {}){
+  $('#pTitle').textContent = title; $('#pMsg').textContent = msg;
+  $('#pickBtn').style.display = model ? '' : 'none';
+  $('#retry').style.display = camera ? '' : 'none';
+  $('#panel').hidden = false;
+}
+const hidePanel = () => { $('#panel').hidden = true; };
+function resize(){
+  const d = devicePixelRatio || 1;
+  cv.width = Math.round(cv.clientWidth * d); cv.height = Math.round(cv.clientHeight * d);
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+function refresh(){ if (session && stream) { hidePanel(); setStatus('active'); loop(); } }
+
+/* ================== ONNX RUNTIME ================== */
+function loadScript(src){
+  return new Promise((ok, fail) => {
+    const s = document.createElement('script'); s.src = src;
+    s.onload = ok; s.onerror = () => fail(new Error('Yüklenemedi: ' + src));
+    document.head.appendChild(s);
+  });
+}
+async function ensureOrt(){
+  if (window.ort) return;
+  for (const src of ORT_SOURCES){
+    try { await loadScript(src.js); ort.env.wasm.wasmPaths = src.wasm; break; } catch(e){}
+  }
+  if (!window.ort) throw new Error('ONNX Runtime Web yüklenemedi. İnternet bağlantısını kontrol et veya ort/ klasörünü ekle.');
+  ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1;
+  ort.env.wasm.proxy = !sessionStorage.getItem('np');   // çıkarım worker'da: kamera/çizim akıcı kalır
+}
+
+/* ================== MODEL (IndexedDB önbellekli) ================== */
+const DB = {
+  open: () => new Promise((ok, fail) => {
+    const r = indexedDB.open('yolo-cache', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => ok(r.result); r.onerror = () => fail(r.error);
+  }),
+  async get(k){ const db = await this.open();
+    return new Promise((ok, fail) => { const q = db.transaction('kv').objectStore('kv').get(k);
+      q.onsuccess = () => ok(q.result); q.onerror = () => fail(q.error); }); },
+  async set(k, v){ const db = await this.open();
+    return new Promise((ok, fail) => { const t = db.transaction('kv', 'readwrite');
+      t.objectStore('kv').put(v, k); t.oncomplete = ok; t.onerror = () => fail(t.error); }); },
+};
+
+async function probe(){
+  let lastErr;
+  for (const s of CONFIG.INPUT_CANDIDATES){
+    try {
+      const t = new ort.Tensor('float32', new Float32Array(3 * s * s), [1, 3, s, s]);
+      const out = (await session.run({ [inputName]: t }))[outputName];
+      return { s, dims: out.dims };
+    } catch(e){ lastErr = e; }
+  }
+  throw lastErr;
+}
+
+async function startSession(buf, label, persist){
+  setStatus('load');
+  try {
+    await ensureOrt();
+    session = await ort.InferenceSession.create(new Uint8Array(buf.slice(0)),
+      { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    inputName = session.inputNames[0]; outputName = session.outputNames[0];
+    const { s, dims } = await probe();           // aynı zamanda ısınma çalıştırması
+    S = s;
+    layout = dims[1] < dims[2] ? 'cf' : 'rows';  // [1,4+nc,N] veya [1,N,4+nc]
+    nc = (layout === 'cf' ? dims[1] : dims[2]) - 4;
+    classes = buildClasses(buf); Tracker.reset();
+    const named = classes.some(c => !/^sınıf \d+$/.test(c.name));
+    $('#info').textContent = `${label} · ${nc} sınıf · ${S}px` + (classes.some(c => c.threat) ? ' · tehdit sınıfı var'
+      : named ? ' · tehdit sınıfı yok' : ' · ⚠ sınıf adları okunamadı (alarm kapalı)');
+    if (!classes.some(c => c.threat)) toast('Bu modelde tehdit sınıfı yok: ' + classes.slice(0, 8).map(c => c.name).join(', ') + (classes.length > 8 ? '…' : '') + '. Alarm için CONFIG.THREATS veya CLASS_MAP içine ekle.');
+    off = document.createElement('canvas'); off.width = off.height = S;
+    octx = off.getContext('2d', { willReadFrequently: true });
+    input = new Float32Array(3 * S * S);
+    if (persist) DB.set('model', { name: label, buf, labels: customLabels }).catch(() => {});
+    if (stream) refresh(); else setStatus('wait', '⚪ Kamera bekleniyor');
+  } catch(e){
+    session = null; console.error(e);
+    if (window.ort && ort.env.wasm.proxy && !sessionStorage.getItem('np')){ sessionStorage.setItem('np', '1'); location.reload(); return; }   // worker olmazsa bir kez worker'sız dene
+    setStatus('err', '🔴 Model açılamadı');
+    showPanel('Model açılamadı', e.message || String(e), { model: true });
+  }
+}
+
+async function initModel(){
+  setStatus('load');
+  let c = null; try { c = await DB.get('model'); } catch(e){}
+  if (c && c.name === CONFIG.MODEL_URL && !/reset/.test(location.search)){        // önbellekte: anında başla
+    customLabels = c.labels || null; return startSession(c.buf, c.name, false);
+  }
+  try {
+    const r = await fetch(CONFIG.MODEL_URL);
+    if (r.ok){ customLabels = null; return startSession(await r.arrayBuffer(), CONFIG.MODEL_URL, true); }
+  } catch(e){}
+  if (c){ customLabels = c.labels || null; return startSession(c.buf, c.name, false); }   // çevrimdışı yedek
+  setStatus('wait');
+  showPanel('Model bulunamadı', CONFIG.MODEL_URL.replace('./', '') + ' dosyası bu sayfayla aynı klasörde olmalı ve sayfa HTTPS/localhost üzerinden açılmalı. İstersen elle seçebilirsin.', { model: true });
+}
+
+$('#file').addEventListener('change', async e => {
+  const fs = [...e.target.files], f = fs.find(x => /\.onnx$/i.test(x.name)), l = fs.find(x => /\.(txt|json)$/i.test(x.name));
+  if (!f) return;
+  running = false; hidePanel();
+  customLabels = l ? parseLabels(await l.text()) : null;
+  await startSession(await f.arrayBuffer(), f.name, true);
+  e.target.value = '';
+});
+
+/* ================== KAMERA ================== */
+async function startCamera(){
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    showPanel('Kamera kullanılamıyor', 'Sayfayı HTTPS veya localhost üzerinden aç.', { camera: true });
+    setStatus('err', '🔴 Kamera yok'); return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    video.srcObject = stream; await video.play();
+    if (session) refresh(); else if ($('#panel').hidden) setStatus('load');
+  } catch(e){
+    const msg = e.name === 'NotAllowedError' ? 'Kamera izni verilmedi. Tarayıcı ayarlarından izin ver.'
+      : e.name === 'NotFoundError' ? 'Kamera bulunamadı.' : 'Kamera açılamadı: ' + e.message;
+    showPanel('Kamera açılamadı', msg, { camera: true, model: !session });
+    setStatus('err', '🔴 Kamera hatası');
+  }
+}
+$('#retry').addEventListener('click', () => { hidePanel(); startCamera(); });
+
+/* ================== TESPİT ================== */
+const iou = (a, b) => {
+  const w = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1), h = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+  if (w <= 0 || h <= 0) return 0;
+  const i = w * h; return i / ((a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - i);
+};
+
+async function detect(cx0 = 0, cy0 = 0, vw = video.videoWidth, vh = video.videoHeight, minConf = sens() ? Math.min(.2, CONFIG.CONF) : CONFIG.CONF){
+  const k = Math.min(S / vw, S / vh);
+  const nw = Math.round(vw * k), nh = Math.round(vh * k);
+  const px = Math.floor((S - nw) / 2), py = Math.floor((S - nh) / 2);
+  octx.fillStyle = '#727272'; octx.fillRect(0, 0, S, S);   // letterbox
+  octx.filter = nightOn ? 'brightness(1.9) contrast(1.35)' : 'none';
+  octx.drawImage(video, cx0, cy0, vw, vh, px, py, nw, nh);
+  octx.filter = 'none';
+  const data = octx.getImageData(0, 0, S, S).data, area = S * S;
+  input = new Float32Array(3 * area);
+  for (let i = 0, p = 0; i < area; i++, p += 4){
+    input[i] = data[p] / 255; input[i + area] = data[p + 1] / 255; input[i + 2 * area] = data[p + 2] / 255;
+  }
+  const out = (await session.run({ [inputName]: new ort.Tensor('float32', input, [1, 3, S, S]) }))[outputName];
+  const d = out.data, N = layout === 'cf' ? out.dims[2] : out.dims[1], W = 4 + nc, cand = [];
+  for (let i = 0; i < N; i++){
+    let best = -1, bs = 0;
+    for (let c = 0; c < nc; c++){
+      const s = layout === 'cf' ? d[(4 + c) * N + i] : d[i * W + 4 + c];
+      if (s > bs){ bs = s; best = c; }
+    }
+    if (bs < minConf) continue;
+    let cx, cy, w, h;
+    if (layout === 'cf'){ cx = d[i]; cy = d[N + i]; w = d[2 * N + i]; h = d[3 * N + i]; }
+    else { const o = i * W; cx = d[o]; cy = d[o + 1]; w = d[o + 2]; h = d[o + 3]; }
+    cand.push({ x1: cx - w / 2, y1: cy - h / 2, x2: cx + w / 2, y2: cy + h / 2, score: bs, cls: best });
+  }
+  cand.sort((a, b) => b.score - a.score);
+  const keep = [];
+  for (const c of cand){                                   // sınıf bazlı NMS
+    if (keep.every(q => q.cls !== c.cls || iou(q, c) <= CONFIG.IOU)) keep.push(c);
+    if (keep.length >= CONFIG.MAX_DET) break;
+  }
+  const sx = nw / vw, sy = nh / vh, cl = (v, m) => Math.max(0, Math.min(m, v));
+  return keep.map(b => ({ cls: b.cls, score: b.score,
+    x1: cx0 + cl((b.x1 - px) / sx, vw), y1: cy0 + cl((b.y1 - py) / sy, vh),
+    x2: cx0 + cl((b.x2 - px) / sx, vw), y2: cy0 + cl((b.y2 - py) / sy, vh) }));
+}
+
+/* ================== SINIFLAR ================== */
+function readModelNames(buf){          // Ultralytics .onnx içindeki {0: 'person', ...} bilgisi
+  const scan = n => {
+    const txt = new TextDecoder().decode(new Uint8Array(buf, Math.max(0, buf.byteLength - n)));
+    const m = txt.match(/\{\s*0:\s*['"][^}]*\}/); if (!m) return null;
+    const out = [], re = /(\d+):\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")/g; let r;
+    while ((r = re.exec(m[0]))) out[+r[1]] = r[2] !== undefined ? r[2] : r[3];
+    return out.length ? out : null;
+  };
+  try { return scan(262144) || scan(buf.byteLength); } catch(e){ return null; }
+}
+let customLabels = null;
+function parseLabels(t){               // .json (dizi veya {no:ad}) ya da satır satır .txt
+  try { const j = JSON.parse(t); return (Array.isArray(j) ? j : Object.keys(j).sort((a, b) => a - b).map(k => j[k])).map(String); } catch(e){}
+  const a = t.split(/\r?\n/).map(x => x.trim()).filter(Boolean); return a.length ? a : null;
+}
+function buildClasses(buf){
+  const cc = CONFIG.CUSTOM_CLASSES, meta = customLabels && customLabels.length === nc ? customLabels : readModelNames(buf);
+  if (cc.length && cc.length !== nc) console.warn(`CUSTOM_CLASSES (${cc.length}) model sınıf sayısıyla (${nc}) uyuşmuyor.`);
+  const base = cc.length === nc ? cc : meta && meta.length === nc ? meta : nc === 80 ? COCO : [];
+  return Array.from({ length: nc }, (_, i) => {
+    const e = typeof base[i] === 'object' ? base[i] : { name: base[i] || 'sınıf ' + i };
+    const key = String(e.name).toLowerCase(), m = CONFIG.CLASS_MAP[key] || {};
+    return { name: e.name, label: e.label || m.label || e.name,
+             threat: !CONFIG.SAFE.includes(key) && !!(e.threat ?? m.threat ?? CONFIG.THREATS.includes(key)) };
+  });
+}
+
+/* ================== TAKİP & YUMUŞATMA ================== */
+// Alfa-beta filtresi (basit Kalman benzeri) + açgözlü IoU eşleştirme.
+// Kısa süreli kayıplarda iz, hızıyla ilerletilip kesikli çizgiyle gösterilir (TTL_MS kadar).
+const isTh = c => !!(classes[c] && classes[c].threat);
+const nFrames = () => sens() ? 2 : Math.max(2, Math.min(3, CONFIG.VERIFY.FRAMES | 0));
+const box = (x, y, w, h) => ({ x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 });
+const Tracker = {
+  tracks: [], nextId: 1,
+  reset(){ this.tracks = []; },
+  update(dets, t){
+    const T = CONFIG.TRACK, tr = this.tracks, pairs = [];
+    for (const k of tr){ const dt = Math.min(.5, (t - k.t) / 1000); k.px = k.cx + k.vx * dt; k.py = k.cy + k.vy * dt; }
+    dets.forEach((d, di) => tr.forEach((k, ki) => {
+      if (k.cls !== d.cls && !(isTh(k.cls) && isTh(d.cls))) return;
+      const v = iou(box(k.px, k.py, k.w, k.h), d);
+      if (v >= T.MATCH_IOU) pairs.push([v, di, ki]);
+    }));
+    pairs.sort((a, b) => b[0] - a[0]);
+    const du = new Set(), ku = new Set();
+    for (const [, di, ki] of pairs){
+      if (du.has(di) || ku.has(ki)) continue; du.add(di); ku.add(ki);
+      const d = dets[di], k = tr[ki], dt = Math.max(.03, Math.min(.5, (t - k.t) / 1000));
+      const rx = (d.x1 + d.x2) / 2 - k.px, ry = (d.y1 + d.y2) / 2 - k.py;
+      k.cx = k.px + T.ALPHA * rx; k.cy = k.py + T.ALPHA * ry;
+      k.vx += T.BETA * rx / dt; k.vy += T.BETA * ry / dt;
+      k.w += T.SIZE_ALPHA * (d.x2 - d.x1 - k.w); k.h += T.SIZE_ALPHA * (d.y2 - d.y1 - k.h);
+      k.score = k.score * .6 + d.score * .4;
+      k.t = k.seen = t; k.hits++; k.misses = 0; k.confirmed = k.confirmed || k.hits >= T.CONFIRM_HITS;
+      k.cls = d.cls;
+      k.vs = isTh(d.cls) && d.score >= vConf() ? k.vs + 1 : 0;     // ardışık yüksek güvenli kare sayısı
+      if (isTh(d.cls) && !k.verified && !k.pend && k.vs >= nFrames()) k.pend = d;   // 1. aşama geçti -> 2. aşama (zoom)
+    }
+    tr.forEach((k, ki) => { if (ku.has(ki)) return;        // eşleşmeyen iz: tahminle ilerle
+      k.cx = k.px; k.cy = k.py; k.vx *= .85; k.vy *= .85; k.t = t; k.misses++; k.vs = 0; });
+    dets.forEach((d, di) => { if (du.has(di)) return;      // yeni aday iz
+      tr.push({ id: this.nextId++, cls: d.cls, score: d.score, cx: (d.x1 + d.x2) / 2, cy: (d.y1 + d.y2) / 2,
+        w: d.x2 - d.x1, h: d.y2 - d.y1, vx: 0, vy: 0, t, seen: t, hits: 1, misses: 0,
+        confirmed: T.CONFIRM_HITS <= 1, d: null, verified: false,
+        vs: isTh(d.cls) && d.score >= vConf() ? 1 : 0 }); });
+    const alive = tr.filter(k => k.misses === 0 || (k.confirmed && t - k.seen <= T.TTL_MS))
+                    .sort((a, b) => b.hits - a.hits);
+    this.tracks = alive.filter((k, i) => !alive.slice(0, i).some(q =>   // çift izleri ele
+      q.cls === k.cls && iou(box(q.cx, q.cy, q.w, q.h), box(k.cx, k.cy, k.w, k.h)) > .7));
+  },
+  view(ts, dtR){                          // her ekran karesinde akıcı (interpolasyonlu) kutular
+    const T = CONFIG.TRACK, a = 1 - Math.exp(-dtR / T.RENDER_TAU_MS), out = [];
+    for (const k of this.tracks){
+      if (!k.confirmed) continue;
+      const e = Math.min(ts - k.t, T.MAX_COAST_MS) / 1000, x = k.cx + k.vx * e, y = k.cy + k.vy * e;
+      if (!k.d) k.d = { x, y, w: k.w, h: k.h };
+      const d = k.d; d.x += (x - d.x) * a; d.y += (y - d.y) * a; d.w += (k.w - d.w) * a; d.h += (k.h - d.h) * a;
+      out.push({ ...box(d.x, d.y, d.w, d.h), id: k.id, cls: k.cls, score: k.score, coast: k.misses > 0, vs: k.vs,
+        st: !isTh(k.cls) ? 0 : k.verified ? 2 : 1,
+        alpha: k.misses ? Math.max(.35, 1 - (ts - k.seen) / T.TTL_MS) : 1 });
+    }
+    return out;
+  },
+};
+$('#trk').addEventListener('click', e => {
+  const on = CONFIG.TRACK.ENABLED = !CONFIG.TRACK.ENABLED;
+  e.target.textContent = 'Takip: ' + (on ? 'Açık' : 'Kapalı');
+  e.target.classList.toggle('ghost', !on); e.target.setAttribute('aria-pressed', on);
+});
+
+/* ================== ÇİZİM & DÖNGÜLER ================== */
+let fps = 0, lastMs = 0, lastUi = 0, lastTs = 0, rawList = [];
+function draw(list){
+  const cw = cv.clientWidth, ch = cv.clientHeight, vw = video.videoWidth, vh = video.videoHeight;
+  const k = Math.max(cw / vw, ch / vh), ox = (cw - vw * k) / 2, oy = (ch - vh * k) / 2; // object-fit: cover
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.lineJoin = 'round'; ctx.font = '600 13px system-ui,sans-serif';
+  for (const d of list){
+    const c = classes[d.cls] || { label: '?' }, col = ['#34f5a0', '#ffb02e', '#ff4757'][d.st];  // normal / doğrulanıyor / kesin
+    const x = d.x1 * k + ox, y = d.y1 * k + oy, w = (d.x2 - d.x1) * k, h = (d.y2 - d.y1) * k;
+    ctx.globalAlpha = d.alpha;
+    if (d.st === 2){ ctx.fillStyle = 'rgba(255,71,87,.16)'; ctx.fillRect(x, y, w, h); }
+    ctx.strokeStyle = col; ctx.lineWidth = d.st ? 4 : 3; ctx.setLineDash(d.coast ? [8, 6] : []);
+    ctx.strokeRect(x, y, w, h); ctx.setLineDash([]);
+    const tag = d.st === 2 ? 'KESİN · ' + c.label : d.st === 1 ? '⚠ ' + c.label + '?' + (d.id ? ' ' + d.vs + '/' + nFrames() : '') : c.label;
+    const label = (d.id ? '#' + d.id + ' ' : '') + tag + ' ' + Math.round(d.score * 100) + '%';
+    const tw = ctx.measureText(label).width + 12, ly = y >= 22 ? y - 22 : y;
+    ctx.fillStyle = col; ctx.fillRect(x, ly, tw, 22);
+    ctx.fillStyle = d.st === 2 ? '#fff' : '#04140c'; ctx.fillText(label, x + 6, ly + 15);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ================== TEHDİT ÖNİZLEME (PIP) ================== */
+let pipTimer = 0, verAt = -1e9, verText = '';
+function takeSnapshot(d, cls, test){            // doğrulanan anın kırpılmış karesi, sağ üstte gösterilir
+  const vw = video.videoWidth, vh = video.videoHeight, bw = d.x2 - d.x1, bh = d.y2 - d.y1, pad = .35;
+  const x = Math.max(0, d.x1 - bw * pad), y = Math.max(0, d.y1 - bh * pad);
+  const w = Math.min(vw - x, bw * (1 + 2 * pad)), h = Math.min(vh - y, bh * (1 + 2 * pad));
+  const sc = Math.min(1, 360 / Math.max(w, h)), c = $('#pipCv'), p = $('#pip');
+  c.width = Math.max(1, Math.round(w * sc)); c.height = Math.max(1, Math.round(h * sc));
+  const g = c.getContext('2d');
+  g.drawImage(video, x, y, w, h, 0, 0, c.width, c.height);
+  g.strokeStyle = '#ff4757'; g.lineWidth = 3; g.strokeRect((d.x1 - x) * sc, (d.y1 - y) * sc, bw * sc, bh * sc);
+  $('#pipTxt').textContent = `${test ? 'TEST · ' : ''}${(classes[cls] || { label: 'TEST' }).label} · ${Math.round(d.score * 100)}% · ${new Date().toLocaleTimeString('tr-TR')}`;
+  p.style.setProperty('--dur', CONFIG.VERIFY.SNAP_MS + 'ms');
+  p.classList.remove('show'); void p.offsetWidth; p.classList.add('show');      // süre çubuğunu yeniden başlat
+  clearTimeout(pipTimer); pipTimer = setTimeout(() => p.classList.remove('show'), CONFIG.VERIFY.SNAP_MS);
+  return c;
+}
+
+function render(ts){                      // ekran hızında çizim (çıkarımdan bağımsız)
+  requestAnimationFrame(render);
+  if (!session || !stream || video.readyState < 2 || !video.videoWidth){
+    ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight); return;
+  }
+  const on = CONFIG.TRACK.ENABLED, list = on ? Tracker.view(ts, Math.min(100, ts - lastTs)) : rawList;
+  lastTs = ts; draw(list);
+  const ver = Tracker.tracks.filter(k => k.verified);
+  const cand = Tracker.tracks.filter(k => !k.verified && k.confirmed && k.misses === 0 && isTh(k.cls));
+  if (ver.length){ verAt = ts; verText = [...new Set(ver.map(k => classes[k.cls].label))].join(', '); }
+  if (ver.length || ts - verAt < CONFIG.VERIFY.HOLD_MS) setThreat(2, verText);
+  else if (cand.length){ const b = cand.sort((a, c) => c.vs - a.vs)[0]; setThreat(1, classes[b.cls].label, b.vs + '/' + nFrames()); }
+  else setThreat(0);
+  if (M.role === 'cam' && (ver.length ? ts - lastThr > 250 : thrOn)){
+    lastThr = ts; thrOn = ver.length > 0;
+    const W = video.videoWidth, H = video.videoHeight, c01 = v => +Math.max(0, Math.min(1, v)).toFixed(3);
+    sendMasters({ type: 'thr', label: verText, vw: W, vh: H, boxes: ver.map(k => { const b = box(k.cx, k.cy, k.w, k.h); return [c01(b.x1 / W), c01(b.y1 / H), c01(b.x2 / W), c01(b.y2 / H)]; }) });
+  }
+  if (ts - lastUi > 400){ lastUi = ts;
+    const conf = Tracker.tracks.filter(k => k.confirmed), coast = conf.filter(k => k.misses).length;
+    $('#fps').textContent = fps.toFixed(0); $('#ms').textContent = lastMs.toFixed(0); $('#cnt').textContent = list.length;
+    $('#tAct').textContent = on ? conf.length - coast : '–'; $('#tCoast').textContent = on ? coast : '–';
+    $('#tIds').textContent = Tracker.nextId - 1;
+  }
+}
+
+async function loop(){                    // çıkarım döngüsü
+  if (running) return; running = true;
+  while (running){
+    if (session && video.readyState >= 2 && !document.hidden){
+      try {
+        const t0 = performance.now(), dets = await detect(), dt = performance.now() - t0;
+        Tracker.update(dets, t0);
+        for (const k of Tracker.tracks) if (k.pend) await stage2(k);
+        rawList = dets.map(d => ({ ...d, id: 0, vs: 0, coast: false, alpha: 1,
+          st: !isTh(d.cls) ? 0 : Tracker.tracks.some(k => k.verified && isTh(k.cls) && iou(box(k.cx, k.cy, k.w, k.h), d) > .3) ? 2 : 1 }));
+        lastMs = dt; fps = fps ? fps * .8 + (1000 / dt) * .2 : 1000 / dt;
+      } catch(e){
+        console.error(e); running = false; setStatus('err', '🔴 Çıkarım hatası'); return;
+      }
+    }
+    await new Promise(r => setTimeout(r, 0));
+  }
+}
+
+/* ================== 2. AŞAMA: KIRP + YAKINLAŞTIR DOĞRULAMASI ================== */
+// Aynı model, nesne bölgesi kırpılıp büyütülerek (daha fazla piksel) yeniden çalıştırılır;
+// sadece yüksek güvenle (>CONF) ve aynı yerde tekrar bulunan nesne "kesin tehdit" olur.
+let lastAlarm = -1e9, nightOn = false, gps = null, pipT2 = 0;
+async function stage2(k){
+  const d = k.pend; k.pend = null;
+  const vw = video.videoWidth, vh = video.videoHeight, V = CONFIG.VERIFY;
+  const side = Math.min(vw, vh, Math.max(96, Math.max(d.x2 - d.x1, d.y2 - d.y1) * 1.8));
+  const x0 = Math.max(0, Math.min(vw - side, (d.x1 + d.x2) / 2 - side / 2)), y0 = Math.max(0, Math.min(vh - side, (d.y1 + d.y2) / 2 - side / 2));
+  const mx = (d.x2 - d.x1) * .25, my = (d.y2 - d.y1) * .25;
+  const r = (await detect(x0, y0, side, side, vConf())).filter(q => {
+    const cx = (q.x1 + q.x2) / 2, cy = (q.y1 + q.y2) / 2;           // zoom'da aynı bölgede, tehdit sınıfında, yeterli güvenle
+    return isTh(q.cls) && q.score >= vConf() && cx > d.x1 - mx && cx < d.x2 + mx && cy > d.y1 - my && cy < d.y2 + my;
+  }).sort((a, b) => b.score - a.score)[0];
+  if (!r){ k.tries = (k.tries || 0) + 1; if (k.tries >= 3){ k.tries = 0; k.vs = 0; } else k.vs = nFrames() - 1; return; }  // hızlı yeniden deneme
+  k.verified = true;
+  const now = performance.now();
+  if (now - lastAlarm > 8000){ lastAlarm = now; confirmThreat(r, r.cls, false); }
+}
+
+/* ================== SES (SİREN) / TİTREŞİM ================== */
+let AC = null;
+const actx = () => AC || (AC = new (window.AudioContext || window.webkitAudioContext)());
+function siren(sec = 5){
+  try {
+    const c = actx(); c.resume(); A.mute = performance.now() + sec * 1000 + 1000;   // kendi sirenimizi dinlemeyelim
+    const o = c.createOscillator(), g = c.createGain(), l = c.createOscillator(), lg = c.createGain(), t = c.currentTime;
+    o.type = 'sawtooth'; o.frequency.value = 900; l.frequency.value = 2; lg.gain.value = 320; l.connect(lg); lg.connect(o.frequency);
+    g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.25, t + .05);
+    g.gain.setValueAtTime(.25, t + sec - .3); g.gain.exponentialRampToValueAtTime(.0001, t + sec);
+    o.connect(g).connect(c.destination); o.start(); l.start(); o.stop(t + sec); l.stop(t + sec);
+  } catch(e){}
+}
+const buzz = () => navigator.vibrate && navigator.vibrate([300, 100, 300, 100, 600]);
+addEventListener('pointerdown', () => { try { actx().resume(); } catch(e){} }, { once: true });
+
+/* ================== AKUSTİK SINIFLANDIRMA (silah / patlama / çığlık) ================== */
+// Eğitimli bir model değil: başlangıç hızı, seviye, spektral düzlük/ağırlık merkezi ve süre desenine bakan sezgisel sınıflandırıcı.
+const A = { on: false, until: 0, mute: 0, cool: 0, base: null, hist: [], imp: null, why: '', k: 0, SENS_MS: 15000 };
+function sens(){ return performance.now() < A.until; }                 // ses şüphesi -> en yüksek görsel hassasiyet
+const vConf = () => sens() ? Math.min(.55, CONFIG.VERIFY.CONF) : CONFIG.VERIFY.CONF;   // ses şüphesinde eşik düşer
+async function micToggle(){
+  const b = $('#mic');
+  if (A.on){ A.on = false; A.stream.getTracks().forEach(t => t.stop()); b.textContent = '🎙 Ses: Kapalı'; b.classList.add('ghost'); return; }
+  try {
+    A.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const c = actx(); await c.resume();
+    A.an = c.createAnalyser(); A.an.fftSize = 2048; A.an.smoothingTimeConstant = 0;
+    c.createMediaStreamSource(A.stream).connect(A.an);
+    A.t = new Float32Array(2048); A.f = new Float32Array(1024); A.hist = []; A.base = null; A.imp = null; A.on = true; b.classList.remove('ghost'); audioTick();
+  } catch(e){ b.textContent = '🎙 İzin yok'; }
+}
+function audioTick(){
+  if (!A.on) return; setTimeout(audioTick, 40);
+  A.an.getFloatTimeDomainData(A.t); A.an.getFloatFrequencyData(A.f);
+  let e = 0; for (const v of A.t) e += v * v;
+  const now = performance.now(), db = 20 * Math.log10(Math.sqrt(e / 2048) + 1e-7), hz = AC.sampleRate / 2048;
+  let P = 0, lo = 0, cs = 0, ls = 0, ps = 0, n = 0;
+  for (let i = 2; i < 600; i++){
+    const q = Math.pow(10, A.f[i] / 10); P += q; cs += i * q;
+    if (i < 10) lo += q;
+    if (i >= 14 && i < 372){ ls += Math.log(q + 1e-20); ps += q; n++; }
+  }
+  const flat = Math.exp(ls / n) / (ps / n + 1e-20), cen = cs / (P + 1e-20) * hz, h = A.hist;
+  if (A.base === null) A.base = db;
+  h.push({ db, flat, low: lo / (P + 1e-20), cen }); if (h.length > 40) h.shift();
+  let why = '';
+  if (now >= A.mute && now >= A.cool){
+    const pre = Math.min(db, ...h.slice(-6, -1).map(f => f.db));
+    if (!A.imp && db - pre > 20 && db > -30) A.imp = { t: now, pk: db, flat: 0, low: 0, n: 0 };        // ani başlangıç
+    if (A.imp){
+      const I = A.imp, f = h[h.length - 1];
+      I.pk = Math.max(I.pk, db); I.flat = Math.max(I.flat, f.flat); I.low += f.low; I.n++;
+      if (now - I.t > 400){                                                                              // 400 ms sonra desen değerlendirilir
+        const decay = I.pk - db;
+        if (I.low / I.n > .45 && decay < 15) why = 'patlama benzeri ses';                               // düşük frekans ağırlıklı, yavaş sönen
+        else if (I.flat > .25 && decay > 12) why = 'silah sesi benzeri (ani darbe)';                    // geniş bantlı, hızlı sönen
+        A.imp = null;
+      }
+    }
+    const w = h.slice(-12);                                                                             // çığlık: ~0.5 sn tonal 1-4 kHz enerji
+    if (!why && w.length === 12 && w.filter(f => f.db > A.base + 14 && f.db > -38 && f.flat < .22 && f.cen > 900 && f.cen < 3800).length >= 9) why = 'çığlık benzeri ses';
+  }
+  if (why){ A.until = now + A.SENS_MS; A.cool = now + 3000; A.why = why; toast('🎙 ' + why + ' → görsel tarama en yüksek hassasiyette', 5000); }
+  else if (now >= A.mute && !A.imp) A.base += (db - A.base) * .02;
+  if (++A.k % 6 === 0) $('#mic').textContent = sens() ? '🎙 HASSAS · ' + A.why : '🎙 ' + db.toFixed(0) + ' dB';
+}
+
+/* ================== GPS ================== */
+const showGps = () => { $('#gps').textContent = gps ? '📍 ' + gps.lat.toFixed(5) + ', ' + gps.lon.toFixed(5) : '📍 GPS yok'; };
+const fix = p => gps = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
+const getGps = ms => new Promise(ok => navigator.geolocation
+  ? navigator.geolocation.getCurrentPosition(p => { fix(p); showGps(); ok(gps); }, () => ok(gps), { timeout: ms, maximumAge: 20000 }) : ok(gps));
+
+/* ================== KARA KUTU (IndexedDB) ================== */
+const BB = {
+  open: () => new Promise((ok, no) => { const r = indexedDB.open('blackbox', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('ev', { autoIncrement: true });
+    r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); }),
+  async add(v){ const db = await this.open(); return new Promise((ok, no) => { const t = db.transaction('ev', 'readwrite');
+    t.objectStore('ev').add(v); t.oncomplete = ok; t.onerror = () => no(t.error); }); },
+  async all(){ const db = await this.open(); return new Promise((ok, no) => { const q = db.transaction('ev').objectStore('ev').getAll();
+    q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); }); },
+  async clear(){ const db = await this.open(); return new Promise(ok => { const t = db.transaction('ev', 'readwrite'); t.objectStore('ev').clear(); t.oncomplete = ok; }); },
+};
+const safeImg = v => typeof v === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]{0,200000}$/.test(v) ? v : '';
+async function addEvent(r){ try { await BB.add(r); } catch(e){} if (!$('#hist').hidden) renderHist(); }
+async function renderHist(){
+  const box = $('#hl'); box.textContent = '';
+  let all = []; try { all = (await BB.all()).reverse().slice(0, 40); } catch(e){}
+  if (!all.length) box.textContent = 'Kayıt yok.';
+  for (const r of all){
+    const row = document.createElement('div'), im = new Image(), t = document.createElement('div'); row.className = 'ev'; im.src = safeImg(r.snap);
+    t.textContent = (r.src === 'remote' ? '📡 ' : r.src === 'test' ? '🧪 ' : '🔴 ') + r.label + ' · ' + Math.round((r.score || 0) * 100) + '% · ' + r.dev
+      + '\n' + new Date(r.ts).toLocaleString('tr-TR') + (r.gps ? '\n📍 ' + r.gps.lat.toFixed(5) + ', ' + r.gps.lon.toFixed(5) : '');
+    row.append(im, t); box.append(row);
+  }
+}
+
+/* ================== MESH: otomatik keşif (şifreli MQTT sinyalleşme) + WebRTC ================== */
+const M = { id: Math.random().toString(36).slice(2, 12), n: 0, loc: '', role: 'cam', code: '', peers: new Map(), seen: new Set(), cli: null, key: null, topic: '' };
+const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const camName = () => M.role === 'master' ? 'Komuta' : 'Kamera ' + (M.n || '?') + (M.loc ? ' - ' + M.loc : '');
+const pname = p => 'Kamera ' + p.n + (p.loc ? ' - ' + p.loc : '');
+const hh = () => new Date().toLocaleTimeString('tr-TR');
+const b64 = u => btoa(String.fromCharCode(...u)), unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+async function mkKey(code){                       // sinyaller ağ kodundan türetilen AES-GCM anahtarıyla şifrelenir
+  const E = new TextEncoder(), base = await crypto.subtle.importKey('raw', E.encode(code), 'PBKDF2', false, ['deriveKey']);
+  M.key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: E.encode('yolo-mesh-v1'), iterations: 100000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', E.encode('topic:' + code)));
+  M.topic = 'yolomesh/' + [...d.slice(0, 8)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+async function seal(o){ const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, M.key, new TextEncoder().encode(JSON.stringify({ ...o, from: M.id, ts: Date.now() }))));
+  return b64(iv) + '.' + b64(ct); }
+async function unseal(t){ const [a, c] = t.split('.');
+  return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(a) }, M.key, unb64(c)))); }
+const pub = async (to, o) => { if (M.cli && M.cli.connected) M.cli.publish(M.topic + (to ? '/to/' + to : '/all'), await seal(o)); };
+const announce = () => pub(null, { t: 'hi', n: M.n, loc: M.loc, role: M.role });
+const peer = id => M.peers.get(id) || (M.peers.set(id, { id, n: 0, loc: '', role: 'cam', ts: Date.now(), pc: null, dc: null, stream: null }), M.peers.get(id));
+function resetPeer(p){ try { p.pc && p.pc.close(); } catch(e){} p.pc = p.dc = p.stream = null; }
+const shouldInit = p => M.role === 'cam' && p.role === 'master' ? true : M.role === 'master' && p.role === 'cam' ? false : M.id < p.id;
+const gathered = pc => pc.iceGatheringState === 'complete' ? 0 : new Promise(ok => {
+  pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && ok()); setTimeout(ok, 2500); });
+function mkPc(p){
+  const pc = p.pc = new RTCPeerConnection({ iceServers: CONFIG.MESH.ICE });
+  pc.onconnectionstatechange = () => { if (['failed', 'closed', 'disconnected'].includes(pc.connectionState) && p.pc === pc){ resetPeer(p); peersUi(); gridUi(); } };
+  pc.ontrack = e => { p.stream = e.streams[0]; gridUi(); };
+  return pc;
+}
+function wire(dc, p){
+  dc.onopen = () => { p.dc = dc; peersUi(); };
+  dc.onclose = () => { if (p.dc === dc) p.dc = null; peersUi(); };
+  dc.onmessage = e => { try { onData(JSON.parse(e.data), p); } catch(err){} };
+}
+async function connect(p){                        // bağlantıyı başlatan taraf (kamera -> komuta: video da gönderir)
+  if (M.role === 'cam' && p.role === 'master' && !stream) return;
+  const pc = mkPc(p);
+  if (M.role === 'cam' && p.role === 'master') stream.getVideoTracks().forEach(t => pc.addTrack(t, stream));
+  wire(pc.createDataChannel('m'), p);
+  await pc.setLocalDescription(await pc.createOffer()); await gathered(pc);
+  pub(p.id, { t: 'offer', sdp: pc.localDescription });
+}
+async function onSig(m){
+  if (m.from === M.id || Math.abs(Date.now() - m.ts) > 60000) return;
+  const p = peer(m.from);
+  if (m.t === 'hi'){
+    const role = m.role === 'master' ? 'master' : 'cam';
+    if (p.role !== role) resetPeer(p);
+    Object.assign(p, { role, n: Math.max(0, Math.min(99, +m.n || 0)), loc: String(m.loc || '').slice(0, 60), ts: Date.now() });
+    if (M.role === 'cam' && role === 'cam' && M.n && p.n === M.n && M.id > p.id){ M.n = 0; pickNum(); }   // numara çakışması
+    if (!p.pc && shouldInit(p)) connect(p);
+    peersUi(); gridUi();
+  } else if (m.t === 'offer'){
+    resetPeer(p); const pc = mkPc(p); pc.ondatachannel = e => wire(e.channel, p);
+    await pc.setRemoteDescription(m.sdp); await pc.setLocalDescription(await pc.createAnswer()); await gathered(pc);
+    pub(p.id, { t: 'answer', sdp: pc.localDescription });
+  } else if (m.t === 'answer' && p.pc && p.pc.signalingState === 'have-local-offer') await p.pc.setRemoteDescription(m.sdp);
+}
+async function meshStart(){
+  await mkKey(M.code);
+  const c = M.cli = mqtt.connect(CONFIG.MESH.BROKER, { clientId: 'ym-' + M.id, reconnectPeriod: 3000, connectTimeout: 8000 });
+  c.on('connect', () => { c.subscribe(M.topic + '/all'); c.subscribe(M.topic + '/to/' + M.id); announce(); peersUi(); });
+  c.on('message', async (t, pl) => { try { await onSig(await unseal(pl.toString())); } catch(e){} });
+  c.on('close', peersUi);
+  setInterval(announce, 5000);
+  setInterval(() => { const now = Date.now(); for (const [id, p] of M.peers) if (now - p.ts > 16000){ resetPeer(p); M.peers.delete(id); } peersUi(); gridUi(); }, 3000);
+  setTimeout(() => { if (M.role === 'cam') pickNum(); }, 2600);          // önce mevcut kameralar dinlenir, sonra sıradaki numara alınır
+}
+function pickNum(){
+  const used = new Set([...M.peers.values()].filter(p => p.role === 'cam' && p.n).map(p => p.n));
+  let n = 0; try { n = +localStorage.getItem('camN:' + M.code) || 0; } catch(e){}
+  if (!n || used.has(n)){ n = 1; while (used.has(n)) n++; }
+  const first = !M.n && !M.loc; M.n = n;
+  try { localStorage.setItem('camN:' + M.code, n); } catch(e){}
+  announce(); peersUi();
+  if (first && !M.loc){ $('#net').hidden = false; $('#locIn').focus(); toast('Yeni kamera: ' + camName() + ' — konumunu gir (örn. 2. Kat Kuzey Koridoru).', 10000); }
+}
+function peersUi(){
+  const ps = [...M.peers.values()], L = $('#peerList'); L.textContent = '';
+  for (const p of ps){ const d = document.createElement('div');
+    d.textContent = (p.role === 'master' ? '🖥️ Komuta' : '📷 ' + pname(p)) + (p.dc && p.dc.readyState === 'open' ? ' ✓' : ' …'); L.append(d); }
+  const up = ps.filter(p => p.dc && p.dc.readyState === 'open').length;
+  $('#netSt').textContent = M.cli && M.cli.connected ? 'Bu cihaz: ' + camName() + ' · bağlı: ' + up + '/' + ps.length : 'Bağlanıyor…';
+  $('#netb').textContent = '📡 Ağ: ' + up; $('#camName').textContent = M.role === 'master' ? 'KOMUTA' : 'KAM-' + (M.n || '?');
+}
+function sendMasters(o){ const j = JSON.stringify(o); for (const p of M.peers.values()) if (p.role === 'master' && p.dc && p.dc.readyState === 'open') p.dc.send(j); }
+function bcast(m){ M.seen.add(m.id); const j = JSON.stringify(m); for (const p of M.peers.values()) if (p.dc && p.dc.readyState === 'open') p.dc.send(j); }
+
+/* ----- gelen veri (güvenilmez kabul edilir) ----- */
+function clean(m){
+  const n = (v, d = 0) => Number.isFinite(+v) ? +v : d, t = (v, l = 40) => String(v == null ? '' : v).slice(0, l);
+  const g = m.gps && Number.isFinite(+m.gps.lat) && Number.isFinite(+m.gps.lon) ? { lat: +m.gps.lat, lon: +m.gps.lon } : null;
+  return { id: t(m.id), type: 'alarm', dev: t(m.dev, 80), label: t(m.label), score: n(m.score), ts: n(m.ts, Date.now()), gps: g, snap: safeImg(m.snap), test: !!m.test };
+}
+function onData(m, p){
+  if (!m || typeof m !== 'object') return;
+  if (m.type === 'alarm'){
+    if (typeof m.id !== 'string' || M.seen.has(m.id)) return; M.seen.add(m.id);
+    const c = clean(m); if (M.role === 'master') ccAlarm(c, p); else remoteAlarm(c);
+  } else if (m.type === 'thr' && M.role === 'master') ccThr(m, p);
+}
+let rmtT = 0;
+function closeRmt(){ $('#rmt').hidden = true; $('#alarm').classList.toggle('on', thKey.startsWith('2|')); }
+function remoteAlarm(m){
+  $('#rmtTxt').textContent = (m.test ? 'TATBİKAT — ' : '') + 'ALARM: ' + m.dev + ' Bölgesinde Tehdit!';
+  $('#rmtSub').textContent = m.label + ' · ' + Math.round(m.score * 100) + '% · ' + new Date(m.ts).toLocaleTimeString('tr-TR')
+    + (m.gps ? '\n📍 ' + m.gps.lat.toFixed(5) + ', ' + m.gps.lon.toFixed(5) : '');
+  $('#rmtSub').style.whiteSpace = 'pre-line'; $('#rmtImg').src = m.snap; $('#rmtImg').style.display = m.snap ? '' : 'none';
+  $('#rmt').hidden = false; $('#alarm').classList.add('on'); siren(m.test ? 2 : 5); buzz();
+  clearTimeout(rmtT); rmtT = setTimeout(closeRmt, 12000);
+  addEvent({ ...m, src: m.test ? 'test' : 'remote' });
+}
+
+/* ================== KOMUTA MERKEZİ (master) ================== */
+const INC = { on: false, cur: '', last: 0, cams: new Map() };
+const tiles = new Map();
+function gridUi(){
+  const g = $('#ccGrid'), ps = [...M.peers.values()].filter(p => p.role === 'cam' && p.stream);
+  for (const [id, t] of tiles) if (!ps.some(p => p.id === id)){ t.el.remove(); tiles.delete(id); }
+  for (const p of ps){
+    let t = tiles.get(p.id);
+    if (!t){ const el = document.createElement('div'); el.className = 'tile'; el.innerHTML = '<video autoplay muted playsinline></video><canvas></canvas><div class="cap"></div>';
+      t = { el, v: el.children[0], c: el.children[1], cap: el.children[2] }; t.v.srcObject = p.stream; g.append(el); tiles.set(p.id, t); }
+    t.cap.textContent = pname(p); t.el.style.order = p.n;
+  }
+  $('#ccInfo').textContent = ps.length + ' kamera'; $('#ccEmpty').style.display = ps.length ? 'none' : '';
+}
+function drawBoxes(t, c){
+  const cv = t.c, w = cv.clientWidth, h = cv.clientHeight; if (cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; }
+  const x = cv.getContext('2d'); x.clearRect(0, 0, w, h); if (!c) return;
+  const k = Math.max(w / c.vw, h / c.vh), ox = (w - c.vw * k) / 2, oy = (h - c.vh * k) / 2;
+  x.strokeStyle = x.fillStyle = '#ff4757'; x.lineWidth = 4; x.font = '600 13px system-ui,sans-serif';
+  for (const b of c.boxes){ const X = b[0] * c.vw * k + ox, Y = b[1] * c.vh * k + oy;
+    x.strokeRect(X, Y, (b[2] - b[0]) * c.vw * k, (b[3] - b[1]) * c.vh * k); x.fillText(c.label, X + 4, Y > 16 ? Y - 5 : Y + 14); }
+}
+function ccAppend(line){ const t = $('#ccMsg'); t.value += '\n[' + hh() + '] ' + line; t.scrollTop = t.scrollHeight; }
+function ccStart(m, p){
+  INC.on = true; INC.cur = p.id;
+  $('#c112').hidden = false; $('#ccTest').textContent = m.test ? '· TATBİKAT' : ''; $('#ccCall').style.display = m.test ? 'none' : '';
+  $('#ccMsg').value = (m.test ? '*** TATBİKAT — GERÇEK İHBAR DEĞİLDİR ***\n' : '') + 'ACİL DURUM: Silahlı/tehlikeli nesne tespiti (otomatik sistem)\n'
+    + 'Adres: ' + ($('#ccAddr').value || '(adres girilmedi)') + '\nKonum: ' + pname(p) + '\nTehdit: ' + m.label + ' (%' + Math.round(m.score * 100) + ') — ' + hh() + '\n'
+    + (m.gps ? 'GPS: ' + m.gps.lat.toFixed(5) + ', ' + m.gps.lon.toFixed(5) + '\n' : '') + '[' + hh() + '] Saldırgan şu an [' + pname(p) + '] bölgesinde görüldü.\n'
+    + 'Not: Otomatik tespittir, teyit gereklidir.\n';
+}
+function ccSight(p, c, now){                       // hedef devri: eski kamera görmeyi bıraktı, yenisi gördü
+  const prev = INC.cams.get(INC.cur);
+  if (INC.on && INC.cur !== p.id && (!prev || now - (prev.seen || 0) > 1500)){ INC.cur = p.id; ccAppend('Saldırgan şu an [' + pname(p) + '] bölgesine geçti'); }
+  c.seen = now; INC.last = now;
+}
+function ccThr(m, p){
+  const bx = (Array.isArray(m.boxes) ? m.boxes : []).slice(0, 6).map(b => Array.isArray(b) && b.length === 4 ? b.map(v => Math.max(0, Math.min(1, +v || 0))) : null).filter(Boolean);
+  const c = INC.cams.get(p.id) || {}; INC.cams.set(p.id, c);
+  Object.assign(c, { vw: Math.max(1, +m.vw || 640), vh: Math.max(1, +m.vh || 480), label: String(m.label || '').slice(0, 30), boxes: bx });
+  if (bx.length){ if (INC.on) ccSight(p, c, Date.now()); else c.seen = Date.now(); }
+}
+function ccAlarm(m, p){
+  addEvent({ ...m, src: m.test ? 'test' : 'remote' }); siren(m.test ? 2 : 6); buzz();
+  const now = Date.now(), c = INC.cams.get(p.id) || { boxes: [], vw: 640, vh: 480, label: m.label }; INC.cams.set(p.id, c);
+  if (!INC.on){ ccStart(m, p); c.seen = INC.last = now; } else ccSight(p, c, now);
+}
+function ccEnd(){ INC.on = false; $('#c112').hidden = true; }
+function setRole(r){
+  M.role = r;
+  if (r === 'master'){
+    M.n = 0; running = false; if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; } $('#cc').hidden = false;
+    Promise.resolve(document.documentElement.requestFullscreen && document.documentElement.requestFullscreen()).then(() => screen.orientation.lock('landscape')).catch(() => {});
+  } else {
+    $('#cc').hidden = true; startCamera(); pickNum();
+    try { document.fullscreenElement && document.exitFullscreen(); } catch(e){}
+  }
+  for (const p of M.peers.values()) resetPeer(p);
+  announce(); peersUi(); gridUi();
+}
+setInterval(() => {
+  if (M.role !== 'master') return;
+  const now = Date.now(); $('#cc').classList.toggle('alarm', !$('#c112').hidden);
+  if (INC.on && now - INC.last > 180000) INC.on = false;                     // uzun süre görülmediyse olay kapanır
+  for (const [id, t] of tiles){ const c = INC.cams.get(id), live = !!(c && c.seen && now - c.seen < 3500);
+    t.el.classList.toggle('hot', live && !$('#c112').hidden); drawBoxes(t, live && now - c.seen < 1200 ? c : null); }
+  $('#ccClock').textContent = new Date().toLocaleTimeString('tr-TR');
+}, 250);
+let lastThr = 0, thrOn = false;
+
+/* ================== TEHDİT ONAYI & TEST ================== */
+function thumb(c){
+  const k = Math.min(1, 240 / Math.max(c.width, c.height)), t = document.createElement('canvas');
+  t.width = Math.max(1, c.width * k | 0); t.height = Math.max(1, c.height * k | 0);
+  t.getContext('2d').drawImage(c, 0, 0, t.width, t.height); return t.toDataURL('image/jpeg', .6);
+}
+async function confirmThreat(d, cls, test){
+  const c = takeSnapshot(d, cls, test), label = (classes[cls] || {}).label || 'TEST';
+  const m = { id: uid(), type: 'alarm', dev: camName(), label, score: d.score, ts: Date.now(), gps, snap: thumb(c), test };
+  siren(test ? 2 : 5); buzz(); bcast(m);                       // anında: siren + titreşim + tüm cihazlara/komutaya yayın
+  const g = await getGps(2500);                                // enlem/boylam HUD'a yazılır
+  addEvent({ ...m, gps: g, src: test ? 'test' : 'local' });
+}
+function testAlarm(){                                          // jüri demosu: tüm senaryo (yayın TATBİKAT olarak işaretlenir)
+  const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
+  confirmThreat({ x1: vw * .3, y1: vh * .3, x2: vw * .7, y2: vh * .7, score: .99 }, classes.findIndex(c => c.threat), true);
+}
+
+function initExtras(){
+  const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch(e){} return null; };
+  document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { b.closest('.sheet').hidden = true; });
+  $('#rmtX').onclick = closeRmt;
+  $('#gear').onclick = e => { const h = $('#hud'); h.hidden = !h.hidden; e.currentTarget.setAttribute('aria-expanded', !h.hidden); e.currentTarget.textContent = h.hidden ? '⚙️' : '✕'; };
+  $('#mic').onclick = micToggle;
+  $('#netb').onclick = () => { $('#net').hidden = !$('#net').hidden; };
+  $('#hb').onclick = () => { $('#hist').hidden = !$('#hist').hidden; if (!$('#hist').hidden) renderHist(); };
+  $('#hclr').onclick = async () => { await BB.clear(); renderHist(); };
+  $('#ccb').onclick = () => { setRole('master'); $('#hud').hidden = true; $('#gear').textContent = '⚙️'; };
+  $('#ccX').onclick = () => setRole('cam');
+  $('#ccEnd').onclick = ccEnd;
+  $('#ccCopy').onclick = () => navigator.clipboard && navigator.clipboard.writeText($('#ccMsg').value);
+  $('#ccAddr').value = ls('ccAddr') || ''; $('#ccAddr').oninput = e => ls('ccAddr', e.target.value);
+  let taps = [];                                               // gizli test: kamera adına 5 hızlı dokunuş
+  $('#camName').onclick = () => { const n = performance.now(); taps = taps.filter(x => n - x < 2000).concat(n); if (taps.length >= 5){ taps = []; testAlarm(); } };
+  // ağ kodu: ?room=KOD > kayıtlı kod > yeni rastgele kod
+  // ağ kodu: ?room=KOD (gizli oda) > daha önce elle seçilen kod > sayfa adresinden türetilen otomatik kod (aynı adres = aynı oda)
+  const urlCode = () => { let h = 2166136261; for (const ch of location.origin + location.pathname) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return 'AUTO' + (h >>> 0).toString(36); };
+  const roomParam = new URLSearchParams(location.search).get('room');
+  M.code = (roomParam || ls('meshCode') || urlCode()).toUpperCase();
+  if (roomParam) ls('meshCode', roomParam);
+  $('#netCode').value = M.code; M.loc = ls('camLoc:' + M.code) || '';
+  $('#locIn').value = M.loc; $('#locIn').oninput = e => { M.loc = e.target.value.trim(); ls('camLoc:' + M.code, M.loc); announce(); peersUi(); };
+  $('#netGo').onclick = () => { const c = $('#netCode').value.trim().toUpperCase(); if (c) location.search = '?room=' + encodeURIComponent(c); };
+  $('#netCopy').onclick = () => { const u = location.href.split('?')[0] + '?room=' + M.code; navigator.clipboard && navigator.clipboard.writeText(u); toast('Davet bağlantısı kopyalandı: ' + u, 6000); };
+  setInterval(() => { $('#clock').textContent = new Date().toLocaleTimeString('tr-TR'); }, 1000);
+  if (navigator.geolocation) navigator.geolocation.watchPosition(p => { fix(p); showGps(); }, showGps, { maximumAge: 20000, timeout: 20000 }); else showGps();
+  // otomatik gece görüşü: işlenmemiş kare parlaklığı (histerezisli)
+  const lc = document.createElement('canvas'); lc.width = lc.height = 16; const lx = lc.getContext('2d', { willReadFrequently: true }); let lum = null;
+  setInterval(() => {
+    if (!stream || video.readyState < 2) return;
+    lx.drawImage(video, 0, 0, 16, 16); const d = lx.getImageData(0, 0, 16, 16).data; let t = 0;
+    for (let i = 0; i < d.length; i += 4) t += .299 * d[i] + .587 * d[i + 1] + .114 * d[i + 2];
+    lum = lum === null ? t / 256 : lum * .7 + (t / 256) * .3;
+    const want = nightOn ? lum < 85 : lum < 55;
+    if (want !== nightOn){ nightOn = want; video.classList.toggle('night', nightOn); $('#nv').textContent = '🌙 Gece: Otomatik (' + (nightOn ? 'Açık' : 'Kapalı') + ')'; }
+  }, 500);
+  peersUi();
+  loadScript('https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js').then(meshStart)
+    .catch(() => { $('#netSt').textContent = 'Mesh kapalı: keşif için internet / MQTT erişimi gerekli.'; });
+}
+
+/* ================== BAŞLAT ================== */
+$('#conf').addEventListener('input', e => {
+  CONFIG.CONF = e.target.value / 100; $('#confV').textContent = e.target.value;
+});
+addEventListener('resize', resize);
+addEventListener('orientationchange', () => setTimeout(resize, 300));
+addEventListener('pagehide', () => stream && stream.getTracks().forEach(t => t.stop()));
+initExtras(); requestAnimationFrame(render); resize(); ensureOrt().catch(() => {}); startCamera(); initModel();
+})();
+</script>
+</body>
+</html>
