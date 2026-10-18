@@ -1,0 +1,1130 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070c11">
+<title>YOLOv8 Nesne Tespiti</title>
+<!--
+KURULUM
+1) Modeli üret (bilgisayarda bir kez):
+     pip install ultralytics
+     yolo export model=yolov8n.pt format=onnx imgsz=320 opset=12
+   Modeli bu HTML ile AYNI klasöre koy; sayfa CONFIG.MODEL_URL dosyasını otomatik yükler.
+   (Aynı adla model değiştirdiysen önbelleği atlamak için sayfayı ?reset ile aç.)
+   Özel tehdit modeli (gun/knife/threat...): sayfadaki "Model" düğmesiyle kendi .onnx dosyanı seç.
+   Sınıf adları modelin içinden otomatik okunur; elle tanımlamak için CONFIG.CUSTOM_CLASSES / CLASS_MAP.
+   Adlar modelde yoksa aynı anda bir etiket dosyası (.txt satır satır veya .json) da seç.
+5) Mesh: aynı sayfa adresini tüm cihazlarda aç; cihazlar kendiliğinden bulunur ve Kamera 1, 2, 3... diye numaralanır (gizli oda için ?room=KOD).
+   Keşif için internet + MQTT broker gerekir; video ve alarm verisi cihazlar arasında doğrudan (WebRTC) akar. Gizli test: kamera adına 5 hızlı dokun.
+2) Kamera için sayfa HTTPS veya localhost üzerinden açılmalı (ör. GitHub Pages).
+   Dosyayı doğrudan açarsan model otomatik okunamaz; sayfadaki "Model seç" ile .onnx'i seç.
+3) Model bir kez yüklenince tarayıcıda (IndexedDB) saklanır, sonraki açılışlarda tekrar istenmez.
+4) Tam çevrimdışı çalışma: ONNX Runtime dosyalarını (ort.min.js ve ort-wasm*.wasm) indirip
+   "ort/" klasörüne koy; CDN'e ulaşılamazsa sayfa otomatik olarak oradan yükler.
+-->
+<style>
+:root{
+  --bg:#070c11; --glass:rgba(9,15,21,.74); --line:rgba(150,185,210,.18);
+  --text:#e9f1f6; --mute:#8fa3b3; --green:#34f5a0; --red:#ff4757;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--text);overflow:hidden;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#cam,#ov{position:fixed;inset:0;width:100%;height:100%}
+#cam{object-fit:cover;background:var(--bg)}
+#ov{pointer-events:none}
+
+
+.glass{background:var(--glass);border:1px solid var(--line);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.banner{position:fixed;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 12px);
+  max-width:calc(100% - 24px);padding:9px 16px;border-radius:999px;font-size:14px;font-weight:600;
+  letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.hud{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);
+  padding:12px 14px;border-radius:18px;display:grid;gap:10px}
+.stats{display:flex;align-items:center;gap:18px;font-variant-numeric:tabular-nums}
+.stat b{font-size:20px;font-weight:700}
+.stat span{font-size:12px;color:var(--mute);margin-left:4px}
+.stats .btn{margin-left:auto}
+.conf{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--mute)}
+.conf input{flex:1;accent-color:var(--green)}
+.conf output{width:3ch;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
+
+.alarm{position:fixed;inset:0;pointer-events:none;opacity:0;
+  box-shadow:inset 0 0 0 5px var(--red),inset 0 0 70px rgba(255,71,87,.5)}
+.alarm.on{opacity:1;animation:blink .8s ease-in-out infinite alternate}
+@keyframes blink{from{opacity:.35}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.alarm.on{animation:none}}
+.banner.threat{background:rgba(255,71,87,.92);border-color:var(--red);color:#fff}
+.trk{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+.trk b{color:var(--text);font-size:14px}
+.info{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.banner.warn{background:rgba(255,176,46,.92);border-color:#ffb02e;color:#1a1000}
+.stage{display:flex;gap:6px;font-size:12px;font-weight:600}
+.stage span{flex:1;text-align:center;padding:6px 4px;border-radius:10px;border:1px solid var(--line);color:var(--mute);white-space:nowrap}
+.stage span.on{color:var(--green);border-color:var(--green);background:rgba(52,245,160,.1)}
+.stage span.on[data-s="1"]{color:#ffb02e;border-color:#ffb02e;background:rgba(255,176,46,.12)}
+.stage span.on[data-s="2"]{color:#fff;border-color:var(--red);background:var(--red)}
+.pip{position:fixed;right:12px;top:calc(env(safe-area-inset-top,0px) + 62px);width:min(42vw,190px);padding:6px;
+  border-radius:14px;border-color:var(--red);display:none;gap:6px;box-shadow:0 0 24px rgba(255,71,87,.35)}
+.pip.show{display:grid}
+.pip canvas{width:100%;max-height:34vh;object-fit:contain;border-radius:9px;background:#000}
+.pip p{font-size:11px;line-height:1.35}.pip b{color:var(--red);font-size:12px}
+.pip i{display:block;height:3px;border-radius:2px;background:var(--red);transform-origin:left;animation:drain var(--dur,5s) linear forwards}
+@keyframes drain{to{transform:scaleX(0)}}
+.camhud{position:fixed;left:12px;top:calc(env(safe-area-inset-top,0px) + 62px);padding:7px 10px;border-radius:12px;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}
+.camhud b{font-size:13px;user-select:none}.rec{color:var(--red);animation:rec 1.2s steps(2) infinite}
+@keyframes rec{50%{opacity:.2}}
+.tools{display:flex;gap:6px;flex-wrap:wrap}.tools .btn{padding:7px 10px;font-size:12px}
+#cam.night{filter:brightness(1.8) contrast(1.3) saturate(.6)}
+.rmt{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top,0px) + 62px);z-index:6;padding:12px;border-radius:16px;
+  background:rgba(190,24,40,.94);border:1px solid #ff8a95;display:grid;gap:8px}
+.rmt[hidden],.sheet[hidden]{display:none}
+.rmt b{font-size:16px}.rmt .r2{display:flex;gap:10px;font-size:12px;align-items:flex-start}.rmt img{width:96px;border-radius:8px;background:#000}
+.sheet{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:7;width:min(92vw,400px);max-height:80vh;overflow:auto;
+  padding:16px;border-radius:18px;display:grid;gap:10px;font-size:13px}
+.sheet h2{font-size:16px;display:flex;justify-content:space-between;align-items:center}
+.sheet input,.sheet textarea{width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.35);color:var(--text);font:12px ui-monospace,monospace}
+.sheet .row{display:flex;flex-wrap:wrap;gap:6px}
+.ev{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:12px}.ev img{width:64px;height:64px;object-fit:cover;border-radius:8px;background:#000}.ev div{white-space:pre-line}
+.hud{bottom:calc(env(safe-area-inset-bottom,0px) + 64px);max-height:62vh;overflow:auto}.hud[hidden]{display:none}
+.gear{position:fixed;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);width:44px;height:44px;padding:0;border-radius:50%;font-size:18px;color:var(--text);cursor:pointer}
+.sign{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);padding:6px 14px;border-radius:999px;
+  font-size:11px;letter-spacing:.04em;color:var(--mute);text-decoration:none;white-space:nowrap;background:rgba(9,15,21,.5)}
+.toast{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 64px);padding:10px 14px;border-radius:14px;font-size:12px;line-height:1.5;z-index:5}
+.btn:not(.ghost){border-color:rgba(255,255,255,.35)}
+.cc{position:fixed;inset:0;z-index:8;background:#05080c;display:flex;flex-direction:column}.cc[hidden]{display:none}
+.cc header{display:flex;gap:14px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);font-size:13px}.cc header b{flex:1}
+.ccMain{flex:1;display:flex;min-height:0}
+.ccGrid{flex:1;display:flex;flex-wrap:wrap;gap:6px;padding:6px;align-content:flex-start;overflow:auto}#ccEmpty{margin:auto;color:var(--mute);font-size:14px}
+.tile{position:relative;flex:1 1 44%;height:44vh;background:#000;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.tile video,.tile canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.tile .cap{position:absolute;left:8px;bottom:6px;font-size:12px;font-weight:600;text-shadow:0 1px 3px #000}
+.cc.alarm .tile{flex:1 1 150px;height:92px}.cc.alarm .tile.hot{flex:1 1 100%;height:58vh;border:2px solid var(--red)}
+.c112{width:min(42vw,420px);padding:12px;display:grid;gap:8px;align-content:start;overflow:auto;background:#0a1016;border-left:2px solid var(--red);font-size:13px}
+.c112[hidden]{display:none}.c112 h3{font-size:14px;color:#ff8a95}.c112 small{color:var(--mute);line-height:1.4}
+.c112 input,.c112 textarea{width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.4);color:var(--text);font:12px ui-monospace,monospace}
+.c112 .row{display:flex;flex-wrap:wrap;gap:6px}.c112 a.btn{text-decoration:none}
+.btn{display:inline-block;padding:9px 14px;border-radius:12px;border:1px solid var(--line);
+  background:rgba(255,255,255,.1);color:var(--text);font:600 13px system-ui,sans-serif;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--text)}
+
+.panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(88vw,360px);
+  padding:22px;border-radius:20px;display:grid;gap:12px;text-align:left}
+.panel[hidden]{display:none}
+.panel h2{font-size:18px}
+.panel p{font-size:14px;line-height:1.5;color:var(--mute)}
+.panel .row{display:flex;flex-wrap:wrap;gap:8px}
+
+/* ===== v2: animasyonlar, komuta merkezi, sağlık monitörü ===== */
+.banner[hidden]{display:none}.toast{z-index:9}
+.hud{overflow-x:hidden}
+.hud.slup{animation:slup .34s cubic-bezier(.2,.8,.2,1)}
+.hud.sldn{animation:sldn .28s cubic-bezier(.5,0,.8,.4) forwards}
+@keyframes slup{from{transform:translateY(115%);opacity:0}to{transform:none;opacity:1}}
+@keyframes sldn{from{transform:none;opacity:1}to{transform:translateY(115%);opacity:0}}
+.pgs{display:grid;overflow:hidden}
+.pg{grid-area:1/1;min-width:0;display:grid;gap:10px;align-content:start;font-size:13px}
+.pg[hidden]{display:none}
+.pg.inR{animation:inR .3s cubic-bezier(.2,.8,.2,1)}.pg.inL{animation:inL .3s cubic-bezier(.2,.8,.2,1)}
+.pg.outL{animation:outL .3s cubic-bezier(.2,.8,.2,1) forwards}.pg.outR{animation:outR .3s cubic-bezier(.2,.8,.2,1) forwards}
+@keyframes inR{from{transform:translateX(100%)}to{transform:none}}
+@keyframes inL{from{transform:translateX(-100%)}to{transform:none}}
+@keyframes outL{to{transform:translateX(-100%)}}
+@keyframes outR{to{transform:translateX(100%)}}
+@media (prefers-reduced-motion:reduce){.hud,.pg{animation:none!important}.pg.outL,.pg.outR{visibility:hidden}}
+.phd,.pg h2{display:flex;align-items:center;gap:10px}.phd{justify-content:space-between;font-size:15px}.pg h2{font-size:16px}
+#net input,#hist input{width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.35);color:var(--text);font:12px ui-monospace,monospace}
+.pg .row{display:flex;flex-wrap:wrap;gap:6px}
+.brand{display:flex;align-items:center;gap:12px;padding:8px 14px;background:linear-gradient(90deg,#0a2447,#11407a 55%,#0a2447);border-bottom:2px solid #d4a935}
+.brand .logo{width:44px;height:44px;flex:none;border-radius:50%;border:2px solid #d4a935;background:rgba(255,255,255,.12);display:grid;place-items:center;overflow:hidden;cursor:pointer;font-size:22px}
+.brand .logo img{width:100%;height:100%;object-fit:contain;background:#fff}
+.brand .nm{font-weight:700;font-size:15px;letter-spacing:.02em;outline:none;min-width:0}.brand small{color:#b8cde6;font-size:11px}
+.ccGrid{position:relative}.tile{cursor:zoom-in;-webkit-user-select:none;user-select:none}.tile.big{cursor:zoom-out}
+.tile .cap{top:6px;bottom:auto}
+.tile video.night{filter:brightness(1.8) contrast(1.3) saturate(.6)}
+.hlth{position:absolute;right:8px;top:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(0,0,0,.62);border:1px solid var(--line);font-variant-numeric:tabular-nums}
+.hlth.bad{border-color:var(--red);color:#ff8a95}
+.tctl{position:absolute;left:0;right:0;bottom:0;display:flex;flex-wrap:wrap;align-items:center;gap:5px;padding:20px 6px 6px;background:linear-gradient(transparent,rgba(0,0,0,.86));cursor:default}
+.tctl .btn{padding:6px 9px;font-size:11px}.tctl .btn.live{background:var(--red);border-color:var(--red);color:#fff}.tctl .btn:disabled{opacity:.4}
+.tctl .zm{display:flex;align-items:center;gap:4px;font-size:11px;flex:1 1 120px}.tctl .zm input{flex:1;min-width:60px;accent-color:var(--green)}
+.ccGrid.hasBig{overflow:hidden}.ccGrid.hasBig .tile:not(.big){display:none}
+.cc .ccGrid .tile.big{position:absolute;inset:0;z-index:3;height:auto!important;flex:none;border-radius:0;touch-action:none}
+.cc.alarm .tile:not(.hot):not(.big) .tctl{display:none}
+.c112>.btn{width:100%}
+</style>
+</head>
+<body>
+<video id="cam" autoplay muted playsinline></video>
+<canvas id="ov"></canvas>
+
+<div class="alarm" id="alarm"></div>
+<div class="camhud glass"><b id="camName">KAM-1</b> <span class="rec">● REC</span> <span id="clock"></span><br><span id="gps">📍 GPS bekleniyor</span></div>
+<section class="cc" id="cc" hidden>
+  <div class="brand"><label class="logo" title="Okul logosunu yükle"><img id="ccLogo" alt="Okul logosu" hidden><span id="ccLogoPh">🏫</span><input type="file" id="ccLogoIn" accept="image/*" hidden></label>
+    <div><div class="nm" id="ccSchool" contenteditable="true" spellcheck="false" title="Adı düzenlemek için dokun">Hüseyin Celal Yardımcı Fen Lisesi - Güvenlik Komuta Merkezi</div><small>Logo için daireye, ad için yazıya dokun</small></div></div>
+  <header><b>🖥️ KOMUTA MERKEZİ</b><span id="ccInfo">0 kamera</span><span id="ccClock"></span><button class="btn ghost" id="ccX">Çık</button></header>
+  <div class="ccMain"><div class="ccGrid" id="ccGrid"><div id="ccEmpty">Bağlı kamera yok. Diğer cihazları aynı ağ koduyla aç.</div></div>
+    <aside class="c112" id="c112" hidden>
+      <div id="c112Pics"></div><h3>🚨 112 ACİL DURUM BİLDİRİMİ <span id="ccTest"></span></h3>
+      <input id="ccAddr" placeholder="Bina adresi (yeni bildirime eklenir)">
+      <textarea id="ccMsg" rows="14"></textarea>
+      <button class="btn" id="ccCopy">📋 Metni Kopyala</button>
+      <div class="row"><a class="btn" id="ccCall" href="tel:112">📞 112'yi ara</a><button class="btn ghost" id="ccEnd">Alarmı kapat</button></div>
+      <small>Bu metin taslaktır, serbestçe düzenlenebilir. Sistem 112'yi kendiliğinden aramaz veya mesaj göndermez; aramadan önce görüntüyü doğrula.</small>
+    </aside></div>
+</section>
+<div class="banner glass" id="banner">🟡 Başlatılıyor…</div>
+
+<section class="panel glass" id="panel" hidden>
+  <h2 id="pTitle"></h2>
+  <p id="pMsg"></p>
+  <div class="row">
+    <label class="btn" for="file" id="pickBtn">Model seç (.onnx + etiket .txt)</label>
+    <button class="btn ghost" id="retry">Kamerayı yeniden dene</button>
+  </div>
+</section>
+<input id="file" type="file" accept=".onnx,.txt,.json,application/octet-stream" multiple hidden>
+
+<button class="gear glass" id="gear" aria-label="Panel" aria-expanded="false">⚙️</button>
+<div class="toast glass" id="toast" hidden></div>
+<a class="sign glass" href="https://instagram.com/dgnemre_04" target="_blank" rel="noopener noreferrer">Developed by: @dgnemre_04</a>
+<section class="hud glass" id="hud" hidden>
+<div class="pgs"><div class="pg cur" id="pg-main">
+  <div class="phd"><b>⚙️ Ayarlar</b><button class="btn ghost" id="hudX">Kapat ✕</button></div>
+  <div class="stage" id="stage"><span data-s="0" class="on">Tarama</span><span data-s="1" id="stV">Doğrulama</span><span data-s="2">Alarm</span></div>
+  <div class="stats">
+    <div class="stat"><b id="fps">0</b><span>FPS</span></div>
+    <div class="stat"><b id="ms">0</b><span>ms</span></div>
+    <div class="stat"><b id="cnt">0</b><span>nesne</span></div>
+    
+  </div>
+  <div class="trk">
+    <button class="btn" id="trk" aria-pressed="true">Takip: Açık</button>
+    <span><b id="tAct">0</b> aktif</span><span><b id="tCoast">0</b> tahmin</span><span><b id="tIds">0</b> ID</span>
+  </div>
+  <div class="tools">
+    <button class="btn ghost" id="mic">🎙 Ses: Kapalı</button><button class="btn ghost" id="nv">🌙 Gece: Otomatik (Kapalı)</button><button class="btn ghost" id="tch">🔦 Flaş: Kapalı</button>
+    <button class="btn ghost" id="netb">📡 Ağ: 0</button><button class="btn ghost" id="hb">📋 Geçmiş</button>
+  </div>
+  <div class="conf">Zoom
+    <input id="zoom" type="range" min="100" max="400" value="100">
+    <output id="zoomV">1.0</output>×
+  </div>
+  <div class="conf">Eşik
+    <input id="conf" type="range" min="10" max="90" value="35">
+    <output id="confV">35</output>%
+  </div>
+  <div class="info" id="info">Model bekleniyor</div>
+</div>
+<section class="pg" id="net" hidden>
+  <h2><button class="btn ghost" data-back>‹ Geri</button><span>📡 Mesh ağı</span></h2>
+  <input id="locIn" maxlength="60" placeholder="Bu kameranın konumu (örn. 2. Kat Kuzey Koridoru)">
+  <input id="netCode" maxlength="14" placeholder="Eşleşme kodu (komuta merkezinden)">
+  <div class="row"><button class="btn" id="netGo">Bu kodla bağlan</button><button class="btn ghost" id="netCopy">Davet bağlantısı</button></div>
+  <div id="netSt">Bağlanıyor…</div><div id="peerList"></div>
+  <div>Diğer cihazları davet bağlantısıyla (veya aynı ağ koduyla) aç: cihazlar kendiliğinden bulunur ve Kamera 1, 2, 3… diye numaralanır.</div>
+</section>
+<section class="pg" id="hist" hidden>
+  <h2><button class="btn ghost" data-back>‹ Geri</button><span>📋 Olay Geçmişi</span></h2>
+  <div id="hl"></div><button class="btn ghost" id="hclr">Günlüğü temizle</button>
+</section>
+</div></section>
+
+<script>
+(() => {
+'use strict';
+
+/* ================== AYARLAR ================== */
+const CONFIG = {
+  MODEL_URL: './4985e860b9f42d83ff052c2c851b2bddc5d98412c8c351733582abd9fd6e182f.onnx',
+  INPUT_CANDIDATES: [320, 416, 480, 512, 640], // modelin kabul ettiği boyut otomatik bulunur
+  CONF: 0.35, IOU: 0.45, MAX_DET: 50,
+  CUSTOM_CLASSES: [],                          // ör. ['insan','silah'] (kendi modelin için)
+  CLASS_MAP: {},   // ad -> {label, threat}. Örn: { pistol:{label:'Tabanca', threat:true} }
+  THREATS: ['gun','pistol','rifle','knife','handgun','firearm','weapon','threat','silah','bıçak','tabanca','tüfek','tehdit'],
+  SAFE: ['scissors','fork','spoon','toothbrush','remote','cell phone'],   // ASLA alarm vermez (THREATS/CUSTOM_CLASSES'a yazılsa bile)
+  MESH: { BROKER: 'wss://broker.emqx.io:8084/mqtt', ICE: [{ urls: 'stun:stun.l.google.com:19302' }] },  // özel MQTT broker önerilir
+  VERIFY: { FRAMES: 2, CONF: .70, HOLD_MS: 3000, SNAP_MS: 5000 },        // FRAMES: 2-3 ardışık kare, CONF: güven eşiği
+  TRACK: { ENABLED:true, MATCH_IOU:.25, ALPHA:.6, BETA:.2, SIZE_ALPHA:.5, CONFIRM_HITS:2, TTL_MS:800, MAX_COAST_MS:250, RENDER_TAU_MS:70 },
+};
+const ORT_SOURCES = [
+  { js:'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/ort.min.js',
+    wasm:'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.3/dist/' },
+  { js:'./ort/ort.min.js', wasm:'./ort/' },       // çevrimdışı yedek
+];
+const COCO = ['person','bicycle','car','motorcycle','airplane','bus','train','truck','boat','traffic light','fire hydrant','stop sign','parking meter','bench','bird','cat','dog','horse','sheep','cow','elephant','bear','zebra','giraffe','backpack','umbrella','handbag','tie','suitcase','frisbee','skis','snowboard','sports ball','kite','baseball bat','baseball glove','skateboard','surfboard','tennis racket','bottle','wine glass','cup','fork','knife','spoon','bowl','banana','apple','sandwich','orange','broccoli','carrot','hot dog','pizza','donut','cake','chair','couch','potted plant','bed','dining table','toilet','tv','laptop','mouse','remote','keyboard','cell phone','microwave','oven','toaster','sink','refrigerator','book','clock','vase','scissors','teddy bear','hair drier','toothbrush'];
+
+/* ================== DURUM ================== */
+const $ = s => document.querySelector(s) || document.createElement('div');
+const video = $('#cam'), cv = $('#ov'), ctx = cv.getContext('2d');
+let session = null, inputName = '', outputName = '';
+let S = 320, nc = 80, layout = 'cf', classes = [], off, octx, input;
+let stream = null, running = false;
+
+/* ================== ARAYÜZ ================== */
+const TEXT = { load:'🟡 Model yükleniyor…', wait:'⚪ Model bekleniyor',
+  active:'🟢 YOLOv8 Yapay Zeka Taraması Aktif', err:'🔴 Hata' };
+let toastT = 0;
+function toast(msg, ms = 8000){ const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
+let curText = '', thKey = '';
+function setStatus(k, custom){
+  curText = custom || TEXT[k]; thKey = '';
+  const b = $('#banner'); b.textContent = curText; b.classList.remove('threat', 'warn'); $('#alarm').classList.remove('on'); b.hidden = k === 'active';
+}
+function setThreat(level, text = '', prog = ''){   // 0: tarama, 1: doğrulanıyor, 2: kesin tehdit
+  const key = level + '|' + text + '|' + prog; if (key === thKey) return;
+  const was = thKey.startsWith('2|'); thKey = key;
+  const b = $('#banner');
+  b.textContent = level === 2 ? '🔴 TEHDİT ONAYLANDI: ' + text : level === 1 ? '🟠 Olası tehdit: ' + text + ' — doğrulanıyor ' + prog : curText;
+  b.classList.toggle('warn', level === 1); b.classList.toggle('threat', level === 2); b.hidden = level === 0 && curText === TEXT.active;
+  $('#alarm').classList.toggle('on', level === 2);
+  document.querySelectorAll('#stage span').forEach(e => e.classList.toggle('on', +e.dataset.s === level));
+  $('#stV').textContent = level === 1 ? 'Doğrulama ' + prog : 'Doğrulama';
+}
+function showPanel(title, msg, {model=false, camera=false} = {}){
+  $('#pTitle').textContent = title; $('#pMsg').textContent = msg;
+  $('#pickBtn').style.display = model ? '' : 'none';
+  $('#retry').style.display = camera ? '' : 'none';
+  $('#panel').hidden = false;
+}
+const hidePanel = () => { $('#panel').hidden = true; };
+function resize(){
+  const d = devicePixelRatio || 1;
+  cv.width = Math.round(cv.clientWidth * d); cv.height = Math.round(cv.clientHeight * d);
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+function refresh(){ if (session && stream) { hidePanel(); setStatus('active'); loop(); } }
+
+/* ================== ONNX RUNTIME ================== */
+function loadScript(src){
+  return new Promise((ok, fail) => {
+    const s = document.createElement('script'); s.src = src;
+    s.onload = ok; s.onerror = () => fail(new Error('Yüklenemedi: ' + src));
+    document.head.appendChild(s);
+  });
+}
+async function ensureOrt(){}
+
+/* ================== MODEL (IndexedDB önbellekli) ================== */
+const DB = {
+  open: () => new Promise((ok, fail) => {
+    const r = indexedDB.open('yolo-cache', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => ok(r.result); r.onerror = () => fail(r.error);
+  }),
+  async get(k){ const db = await this.open();
+    return new Promise((ok, fail) => { const q = db.transaction('kv').objectStore('kv').get(k);
+      q.onsuccess = () => ok(q.result); q.onerror = () => fail(q.error); }); },
+  async set(k, v){ const db = await this.open();
+    return new Promise((ok, fail) => { const t = db.transaction('kv', 'readwrite');
+      t.objectStore('kv').put(v, k); t.oncomplete = ok; t.onerror = () => fail(t.error); }); },
+};
+
+async function probe(){}
+
+async function startSession(){}
+
+async function initModel(){}
+
+$('#file').addEventListener('change', async e => {
+  const fs = [...e.target.files], f = fs.find(x => /\.onnx$/i.test(x.name)), l = fs.find(x => /\.(txt|json)$/i.test(x.name));
+  if (!f) return;
+  running = false; hidePanel();
+  customLabels = l ? parseLabels(await l.text()) : null;
+  await startSession(await f.arrayBuffer(), f.name, true);
+  e.target.value = '';
+});
+
+/* ================== KAMERA ================== */
+async function startCamera(){}
+$('#retry').addEventListener('click', () => { hidePanel(); startCamera(); });
+
+/* ================== TESPİT ================== */
+const iou = (a, b) => {
+  const w = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1), h = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+  if (w <= 0 || h <= 0) return 0;
+  const i = w * h; return i / ((a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - i);
+};
+
+async function detect(){}
+
+/* ================== SINIFLAR ================== */
+function readModelNames(){}
+let customLabels = null;
+function parseLabels(){}
+function buildClasses(){}
+
+/* ================== TAKİP & YUMUŞATMA ================== */
+const isTh = c => !!(classes[c] && classes[c].threat);
+const nFrames = () => sens() ? 2 : Math.max(2, Math.min(3, CONFIG.VERIFY.FRAMES | 0));
+const box = (x, y, w, h) => ({ x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 });
+const Tracker = {
+  tracks: [], nextId: 1,
+  reset(){ this.tracks = []; },
+  update(dets, t){
+    const T = CONFIG.TRACK, tr = this.tracks, pairs = [];
+    for (const k of tr){ const dt = Math.min(.5, (t - k.t) / 1000); k.px = k.cx + k.vx * dt; k.py = k.cy + k.vy * dt; }
+    dets.forEach((d, di) => tr.forEach((k, ki) => {
+      if (k.cls !== d.cls && !(isTh(k.cls) && isTh(d.cls))) return;
+      const v = iou(box(k.px, k.py, k.w, k.h), d);
+      if (v >= T.MATCH_IOU) pairs.push([v, di, ki]);
+    }));
+    pairs.sort((a, b) => b[0] - a[0]);
+    const du = new Set(), ku = new Set();
+    for (const [, di, ki] of pairs){
+      if (du.has(di) || ku.has(ki)) continue; du.add(di); ku.add(ki);
+      const d = dets[di], k = tr[ki], dt = Math.max(.03, Math.min(.5, (t - k.t) / 1000));
+      const rx = (d.x1 + d.x2) / 2 - k.px, ry = (d.y1 + d.y2) / 2 - k.py;
+      k.cx = k.px + T.ALPHA * rx; k.cy = k.py + T.ALPHA * ry;
+      k.vx += T.BETA * rx / dt; k.vy += T.BETA * ry / dt;
+      k.w += T.SIZE_ALPHA * (d.x2 - d.x1 - k.w); k.h += T.SIZE_ALPHA * (d.y2 - d.y1 - k.h);
+      k.score = k.score * .6 + d.score * .4;
+      k.t = k.seen = t; k.hits++; k.misses = 0; k.confirmed = k.confirmed || k.hits >= T.CONFIRM_HITS;
+      k.cls = d.cls;
+      k.vs = isTh(d.cls) && d.score >= vConf() ? k.vs + 1 : 0;     // ardışık yüksek güvenli kare sayısı
+      if (isTh(d.cls) && !k.verified && !k.pend && k.vs >= nFrames()) k.pend = d;   // 1. aşama geçti -> 2. aşama (zoom)
+    }
+    tr.forEach((k, ki) => { if (ku.has(ki)) return;        // eşleşmeyen iz: tahminle ilerle
+      k.cx = k.px; k.cy = k.py; k.vx *= .85; k.vy *= .85; k.t = t; k.misses++; k.vs = 0; });
+    dets.forEach((d, di) => { if (du.has(di)) return;      // yeni aday iz
+      tr.push({ id: this.nextId++, cls: d.cls, score: d.score, cx: (d.x1 + d.x2) / 2, cy: (d.y1 + d.y2) / 2,
+        w: d.x2 - d.x1, h: d.y2 - d.y1, vx: 0, vy: 0, t, seen: t, hits: 1, misses: 0,
+        confirmed: T.CONFIRM_HITS <= 1, d: null, verified: false,
+        vs: isTh(d.cls) && d.score >= vConf() ? 1 : 0 }); });
+    const alive = tr.filter(k => k.misses === 0 || (k.confirmed && t - k.seen <= T.TTL_MS))
+                    .sort((a, b) => b.hits - a.hits);
+    this.tracks = alive.filter((k, i) => !alive.slice(0, i).some(q =>   // çift izleri ele
+      q.cls === k.cls && iou(box(q.cx, q.cy, q.w, q.h), box(k.cx, k.cy, k.w, k.h)) > .7));
+  },
+  view(ts, dtR){                          // her ekran karesinde akıcı (interpolasyonlu) kutular
+    const T = CONFIG.TRACK, a = 1 - Math.exp(-dtR / T.RENDER_TAU_MS), out = [];
+    for (const k of this.tracks){
+      if (!k.confirmed) continue;
+      const e = Math.min(ts - k.t, T.MAX_COAST_MS) / 1000, x = k.cx + k.vx * e, y = k.cy + k.vy * e;
+      if (!k.d) k.d = { x, y, w: k.w, h: k.h };
+      const d = k.d; d.x += (x - d.x) * a; d.y += (y - d.y) * a; d.w += (k.w - d.w) * a; d.h += (k.h - d.h) * a;
+      out.push({ ...box(d.x, d.y, d.w, d.h), id: k.id, cls: k.cls, score: k.score, coast: k.misses > 0, vs: k.vs,
+        st: !isTh(k.cls) ? 0 : k.verified ? 2 : 1,
+        alpha: k.misses ? Math.max(.35, 1 - (ts - k.seen) / T.TTL_MS) : 1 });
+    }
+    return out;
+  },
+};
+$('#trk').addEventListener('click', e => {
+  const on = CONFIG.TRACK.ENABLED = !CONFIG.TRACK.ENABLED;
+  e.target.textContent = 'Takip: ' + (on ? 'Açık' : 'Kapalı');
+  e.target.classList.toggle('ghost', !on); e.target.setAttribute('aria-pressed', on);
+});
+
+/* ================== ÇİZİM & DÖNGÜLER ================== */
+let fps = 0, lastMs = 0, lastUi = 0, lastTs = 0, rawList = [];
+function draw(){}
+
+/* ================== TEHDİT ÖNİZLEME (PIP) ================== */
+let pipTimer = 0, verAt = -1e9, verText = '';
+function takeSnapshot(){}
+
+function render(){}
+
+async function loop(){}
+
+/* ================== 2. AŞAMA: KIRP + YAKINLAŞTIR DOĞRULAMASI ================== */
+let lastAlarm = -1e9, nightOn = false, gps = null, pipT2 = 0;
+async function stage2(){}
+
+/* ================== SES (SİREN) / TİTREŞİM ================== */
+let AC = null;
+const actx = () => AC || (AC = new (window.AudioContext || window.webkitAudioContext)());
+const buzz = () => navigator.vibrate && navigator.vibrate([300, 100, 300, 100, 600]);
+addEventListener('pointerdown', () => { try { actx().resume(); } catch(e){} if (IC.srcObject) IC.play().catch(() => {}); }, { once: true });
+
+/* ================== AKUSTİK SINIFLANDIRMA (silah / patlama / çığlık) ================== */
+const A = { on: false, until: 0, mute: 0, cool: 0, base: null, hist: [], imp: null, why: '', k: 0, SENS_MS: 15000 };
+function sens(){ return performance.now() < A.until; }                 // ses şüphesi -> en yüksek görsel hassasiyet
+const vConf = () => sens() ? Math.min(.55, CONFIG.VERIFY.CONF) : CONFIG.VERIFY.CONF;   // ses şüphesinde eşik düşer
+async function micToggle(){}
+function audioTick(){}
+
+/* ================== GPS ================== */
+const showGps = () => { $('#gps').textContent = gps ? '📍 ' + gps.lat.toFixed(5) + ', ' + gps.lon.toFixed(5) : '📍 GPS yok'; };
+const fix = p => gps = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy };
+const getGps = ms => new Promise(ok => navigator.geolocation
+  ? navigator.geolocation.getCurrentPosition(p => { fix(p); showGps(); ok(gps); }, () => ok(gps), { timeout: ms, maximumAge: 20000 }) : ok(gps));
+
+/* ================== KARA KUTU (IndexedDB) ================== */
+const BB = {
+  open: () => new Promise((ok, no) => { const r = indexedDB.open('blackbox', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('ev', { autoIncrement: true });
+    r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); }),
+  async add(v){ const db = await this.open(); return new Promise((ok, no) => { const t = db.transaction('ev', 'readwrite');
+    t.objectStore('ev').add(v); t.oncomplete = ok; t.onerror = () => no(t.error); }); },
+  async all(){ const db = await this.open(); return new Promise((ok, no) => { const q = db.transaction('ev').objectStore('ev').getAll();
+    q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); }); },
+  async clear(){ const db = await this.open(); return new Promise(ok => { const t = db.transaction('ev', 'readwrite'); t.objectStore('ev').clear(); t.oncomplete = ok; }); },
+};
+const safeImg = v => typeof v === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]{0,200000}$/.test(v) ? v : '';
+async function addEvent(r){ try { await BB.add(r); } catch(e){} if (!$('#hist').hidden) renderHist(); }
+async function renderHist(){
+  const box = $('#hl'); box.textContent = '';
+  let all = []; try { all = (await BB.all()).reverse().slice(0, 40); } catch(e){}
+  if (!all.length) box.textContent = 'Kayıt yok.';
+  for (const r of all){
+    const row = document.createElement('div'), im = new Image(), t = document.createElement('div'); row.className = 'ev'; im.src = safeImg(r.snap);
+    t.textContent = (r.src === 'remote' ? '📡 ' : r.src === 'test' ? '🧪 ' : '🔴 ') + r.label + ' · ' + Math.round((r.score || 0) * 100) + '% · ' + r.dev
+      + '\n' + new Date(r.ts).toLocaleString('tr-TR') + (r.gps ? '\n📍 ' + r.gps.lat.toFixed(5) + ', ' + r.gps.lon.toFixed(5) : '');
+    row.append(im, t); box.append(row);
+  }
+}
+
+/* ================== MESH: otomatik keşif (şifreli MQTT sinyalleşme) + WebRTC ================== */
+const M = { id: Math.random().toString(36).slice(2, 12), n: 0, loc: '', role: 'cam', code: '', peers: new Map(), seen: new Set(), cli: null, key: null, topic: '' };
+const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const camName = () => M.role === 'master' ? 'Komuta' : 'Kamera ' + (M.n || '?') + (M.loc ? ' - ' + M.loc : '');
+const pname = p => 'Kamera ' + p.n + (p.loc ? ' - ' + p.loc : '');
+const hh = () => new Date().toLocaleTimeString('tr-TR');
+const b64 = u => btoa(String.fromCharCode(...u)), unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+async function mkKey(code){                       // sinyaller ağ kodundan türetilen AES-GCM anahtarıyla şifrelenir
+  const E = new TextEncoder(), base = await crypto.subtle.importKey('raw', E.encode(code), 'PBKDF2', false, ['deriveKey']);
+  M.key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: E.encode('yolo-mesh-v1'), iterations: 100000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', E.encode('topic:' + code)));
+  M.topic = 'yolomesh/' + [...d.slice(0, 8)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+async function seal(o){ const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, M.key, new TextEncoder().encode(JSON.stringify({ ...o, from: M.id, ts: Date.now() }))));
+  return b64(iv) + '.' + b64(ct); }
+async function unseal(t){ const [a, c] = t.split('.');
+  return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(a) }, M.key, unb64(c)))); }
+const pub = async (to, o) => { if (M.cli && M.cli.connected) M.cli.publish(M.topic + (to ? '/to/' + to : '/all'), await seal(o)); };
+const announce = () => pub(null, { t: 'hi', n: M.n, loc: M.loc, role: M.role });
+const peer = id => M.peers.get(id) || (M.peers.set(id, { id, n: 0, loc: '', role: 'cam', ts: Date.now(), pc: null, dc: null, stream: null }), M.peers.get(id));
+function resetPeer(p){ try { p.pc && p.pc.close(); } catch(e){} p.pc = p.dc = p.stream = null; }
+const shouldInit = p => M.role === 'cam' && p.role === 'master' ? true : M.role === 'master' && p.role === 'cam' ? false : M.id < p.id;
+const gathered = pc => pc.iceGatheringState === 'complete' ? 0 : new Promise(ok => {
+  pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && ok()); setTimeout(ok, 2500); });
+function mkPc(p){
+  const pc = p.pc = new RTCPeerConnection({ iceServers: CONFIG.MESH.ICE });
+  pc.onconnectionstatechange = () => { if (['failed', 'closed', 'disconnected'].includes(pc.connectionState) && p.pc === pc){ resetPeer(p); peersUi(); gridUi(); } };
+  pc.ontrack = e => { if (e.track.kind === 'audio'){ if (M.role === 'cam') playIntercom(e); return; } p.stream = e.streams[0]; gridUi(); };
+  return pc;
+}
+function wire(dc, p){
+  dc.onopen = () => { p.dc = dc; peersUi(); sendState(); };
+  dc.onclose = () => { if (p.dc === dc) p.dc = null; peersUi(); };
+  dc.onmessage = e => { try { onData(JSON.parse(e.data), p); } catch(err){} };
+}
+async function connect(p){                        // bağlantıyı başlatan taraf (kamera -> komuta: video da gönderir)
+  if (M.role === 'cam' && p.role === 'master' && !stream) return;
+  const pc = mkPc(p);
+  if (M.role === 'cam' && p.role === 'master'){ stream.getVideoTracks().forEach(t => pc.addTrack(t, stream)); pc.addTransceiver('audio', { direction: 'recvonly' }); }   // interkom: komuta -> kamera hoparlörü
+  wire(pc.createDataChannel('m'), p);
+  await pc.setLocalDescription(await pc.createOffer()); await gathered(pc);
+  pub(p.id, { t: 'offer', sdp: pc.localDescription });
+}
+async function onSig(m){
+  if (m.from === M.id || Math.abs(Date.now() - m.ts) > 60000) return;
+  const p = peer(m.from);
+  if (m.t === 'hi'){
+    const role = m.role === 'master' ? 'master' : 'cam';
+    if (p.role !== role) resetPeer(p);
+    Object.assign(p, { role, n: Math.max(0, Math.min(99, +m.n || 0)), loc: String(m.loc || '').slice(0, 60), ts: Date.now() });
+    if (M.role === 'cam' && role === 'cam' && M.n && p.n === M.n && M.id > p.id){ M.n = 0; pickNum(); }   // numara çakışması
+    if (!p.pc && shouldInit(p)) connect(p);
+    peersUi(); gridUi();
+  } else if (m.t === 'offer'){
+    resetPeer(p); const pc = mkPc(p); pc.ondatachannel = e => wire(e.channel, p);
+    await pc.setRemoteDescription(m.sdp);
+    const at = M.role === 'master' && p.role === 'cam' ? pc.getTransceivers().find(x => x.receiver.track.kind === 'audio') : null;
+    if (at){ at.direction = 'sendrecv'; try { await at.sender.replaceTrack(silent()); } catch(e){} }
+    await pc.setLocalDescription(await pc.createAnswer()); await gathered(pc);
+    pub(p.id, { t: 'answer', sdp: pc.localDescription });
+  } else if (m.t === 'answer' && p.pc && p.pc.signalingState === 'have-local-offer') await p.pc.setRemoteDescription(m.sdp);
+}
+async function meshStart(){
+  await mkKey(M.code);
+  const c = M.cli = mqtt.connect(CONFIG.MESH.BROKER, { clientId: 'ym-' + M.id, reconnectPeriod: 3000, connectTimeout: 8000 });
+  c.on('connect', () => { c.subscribe(M.topic + '/all'); c.subscribe(M.topic + '/to/' + M.id); announce(); peersUi(); });
+  c.on('message', async (t, pl) => { try { await onSig(await unseal(pl.toString())); } catch(e){} });
+  c.on('close', peersUi);
+  setInterval(announce, 5000);
+  setInterval(() => { const now = Date.now(); for (const [id, p] of M.peers) if (now - p.ts > 16000){ resetPeer(p); M.peers.delete(id); } peersUi(); gridUi(); }, 3000);
+  setTimeout(() => { if (M.role === 'cam') pickNum(); }, 2600);          // önce mevcut kameralar dinlenir, sonra sıradaki numara alınır
+}
+function pickNum(){
+  const used = new Set([...M.peers.values()].filter(p => p.role === 'cam' && p.n).map(p => p.n));
+  let n = 0; try { n = +localStorage.getItem('camN:' + M.code) || 0; } catch(e){}
+  if (!n || used.has(n)){ n = 1; while (used.has(n)) n++; }
+  const first = !M.n && !M.loc; M.n = n;
+  try { localStorage.setItem('camN:' + M.code, n); } catch(e){}
+  announce(); peersUi();
+  if (first && !M.loc){ openSettings(); showPage('net'); $('#locIn').focus(); toast('Yeni kamera: ' + camName() + ' — konumunu gir (örn. 2. Kat Kuzey Koridoru).', 10000); }
+}
+function peersUi(){
+  const ps = [...M.peers.values()], L = $('#peerList'); L.textContent = '';
+  for (const p of ps){ const d = document.createElement('div');
+    d.textContent = (p.role === 'master' ? '🖥️ Komuta' : '📷 ' + pname(p)) + (p.dc && p.dc.readyState === 'open' ? ' ✓' : ' …'); L.append(d); }
+  const up = ps.filter(p => p.dc && p.dc.readyState === 'open').length;
+  $('#netSt').textContent = M.cli && M.cli.connected ? 'Bu cihaz: ' + camName() + ' · bağlı: ' + up + '/' + ps.length : 'Bağlanıyor…';
+  $('#netb').textContent = '📡 Ağ: ' + up; $('#camName').textContent = M.role === 'master' ? 'KOMUTA' : 'KAM-' + (M.n || '?');
+}
+function sendMasters(o){ const j = JSON.stringify(o); for (const p of M.peers.values()) if (p.role === 'master' && p.dc && p.dc.readyState === 'open') p.dc.send(j); }
+function bcast(m){ M.seen.add(m.id); const j = JSON.stringify(m); for (const p of M.peers.values()) if (p.dc && p.dc.readyState === 'open') p.dc.send(j); }
+
+/* ----- gelen veri (güvenilmez kabul edilir) ----- */
+function clean(m){
+  const n = (v, d = 0) => Number.isFinite(+v) ? +v : d, t = (v, l = 40) => String(v == null ? '' : v).slice(0, l);
+  const g = m.gps && Number.isFinite(+m.gps.lat) && Number.isFinite(+m.gps.lon) ? { lat: +m.gps.lat, lon: +m.gps.lon } : null;
+  return { id: t(m.id), type: 'alarm', dev: t(m.dev, 80), label: t(m.label), score: n(m.score), ts: n(m.ts, Date.now()), gps: g, snap: safeImg(m.snap), test: !!m.test, pt: rgb3(m.pt), pb: rgb3(m.pb), attr: t(m.attr, 140), psn: safeImg(m.psn), frm: safeImg(m.frm), late: !!m.late };
+}
+function onData(m, p){
+  if (!m || typeof m !== 'object') return;
+  if (m.type === 'alarm'){
+    if (typeof m.id !== 'string' || M.seen.has(m.id)) return; M.seen.add(m.id);
+    const c = clean(m); ridAdd(c); if (M.role === 'master') ccAlarm(c, p); else remoteAlarm(c);
+  } else if (m.type === 'thr' && M.role === 'master') ccThr(m, p);
+  else if (M.role === 'cam' && p.role === 'master') camCmd(m, p);
+  else if (M.role === 'master' && p.role === 'cam') ccRemote(m, p);
+}
+let rmtT = 0;
+function closeRmt(){}
+function remoteAlarm(){}
+
+/* ================== KOMUTA MERKEZİ (master) ================== */
+const INC = { on: false, cur: '', last: 0, cams: new Map() };
+const tiles = new Map();
+function gridUi(){
+  const g = $('#ccGrid'), ps = [...M.peers.values()].filter(p => p.role === 'cam' && p.stream);
+  for (const [id, t] of tiles) if (!ps.some(p => p.id === id)){ if (t.el.classList.contains('big')) g.classList.remove('hasBig'); t.el.remove(); tiles.delete(id); }
+  for (const p of ps){
+    let t = tiles.get(p.id);
+    if (!t){ t = mkTile(p); t.v.srcObject = p.stream; g.append(t.el); tiles.set(p.id, t); }
+    else if (t.v.srcObject !== p.stream) t.v.srcObject = p.stream;
+    t.cap.textContent = pname(p); t.el.style.order = p.n; tileUi(p);
+  }
+  $('#ccInfo').textContent = ps.length + ' kamera'; $('#ccEmpty').style.display = ps.length ? 'none' : '';
+  fitSingle();
+}
+function drawBoxes(t, c){
+  const cv = t.c, w = cv.clientWidth, h = cv.clientHeight; if (cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; }
+  const x = cv.getContext('2d'); x.clearRect(0, 0, w, h); if (!c) return;
+  const k = Math.max(w / c.vw, h / c.vh), ox = (w - c.vw * k) / 2, oy = (h - c.vh * k) / 2;
+  x.strokeStyle = x.fillStyle = '#ff4757'; x.lineWidth = 4; x.font = '600 13px system-ui,sans-serif';
+  for (const b of c.boxes){ const X = b[0] * c.vw * k + ox, Y = b[1] * c.vh * k + oy;
+    x.strokeRect(X, Y, (b[2] - b[0]) * c.vw * k, (b[3] - b[1]) * c.vh * k); x.fillText(c.label, X + 4, Y > 16 ? Y - 5 : Y + 14); }
+}
+function ccAppend(line){ const t = $('#ccMsg'); t.value += '\n[' + hh() + '] ' + line; t.scrollTop = t.scrollHeight; }
+function ccStart(m, p){
+  INC.on = true; INC.cur = p.id;
+  $('#c112').hidden = false; $('#ccTest').textContent = m.test ? '· TATBİKAT' : ''; $('#ccCall').style.display = m.test ? 'none' : '';
+  $('#ccMsg').value = (m.test ? '*** TATBİKAT — GERÇEK İHBAR DEĞİLDİR ***\n' : '') + 'ACİL DURUM: Silahlı/tehlikeli nesne tespiti (otomatik sistem)\n'
+    + 'Adres: ' + ($('#ccAddr').value || '(adres girilmedi)') + '\nKonum: ' + pname(p) + '\nTehdit: ' + m.label + ' (%' + Math.round(m.score * 100) + ') — ' + hh() + '\n'
+    + (m.gps ? 'GPS: ' + m.gps.lat.toFixed(5) + ', ' + m.gps.lon.toFixed(5) + '\n' : '') + '[' + hh() + '] Saldırgan şu an [' + pname(p) + '] bölgesinde görüldü.\n'
+    + susLine(m) + 'Not: Otomatik tespittir, teyit gereklidir.\n';
+}
+function ccSight(p, c, now){                       // hedef devri: eski kamera görmeyi bıraktı, yenisi gördü
+  const prev = INC.cams.get(INC.cur);
+  if (INC.on && INC.cur !== p.id && (!prev || now - (prev.seen || 0) > 1500)){ INC.cur = p.id; ccAppend((c.sus ? 'Şüpheli #' + c.sus + ' (eşkal eşleşmesi)' : 'Saldırgan') + ' şu an [' + pname(p) + '] bölgesine geçti'); }
+  c.seen = now; INC.last = now;
+}
+function ccThr(m, p){
+  const bx = (Array.isArray(m.boxes) ? m.boxes : []).slice(0, 6).map(b => Array.isArray(b) && b.length === 4 ? b.map(v => Math.max(0, Math.min(1, +v || 0))) : null).filter(Boolean);
+  const c = INC.cams.get(p.id) || {}; INC.cams.set(p.id, c);
+  Object.assign(c, { vw: Math.max(1, +m.vw || 640), vh: Math.max(1, +m.vh || 480), label: String(m.label || '').slice(0, 30), boxes: bx });
+  const mp = rgb3(m.pt), mb = rgb3(m.pb); c.sus = (mp && SUS.find(x => ridMatch(x, { pt: mp, pb: mb })) || {}).n || 0;
+  if (bx.length){ heatAdd(p.id, 1); if (INC.on) ccSight(p, c, Date.now()); else c.seen = Date.now(); }
+}
+function ccAlarm(m, p){ heatAdd(p && p.id, 5); m.sus = susReg(m);
+  addEvent({ ...m, src: m.test ? 'test' : 'remote' }); siren(m.test ? 3 : 0); buzz();
+  const now = Date.now(), c = INC.cams.get(p.id) || { boxes: [], vw: 640, vh: 480, label: m.label }; INC.cams.set(p.id, c);
+  if (!INC.on){ ccStart(m, p); c.seen = INC.last = now; } else { ccSight(p, c, now); susNote(m, p); }
+  picsUi(m); askDisrupt(m, p);
+  if (m.late && INC.on) ccAppend('⏱ Çevrimdışı kayıt senkronize edildi (olay zamanı: ' + new Date(m.ts).toLocaleTimeString('tr-TR') + ')');
+}
+function ccEnd(){ INC.on = false; SUS.length = 0; $('#c112').hidden = true; }
+function setRole(r){
+  M.role = r;
+  if (r === 'master'){
+    M.n = 0; CAM.torch = false; closeSettings(true); running = false; if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; } $('#cc').hidden = false;
+    Promise.resolve(document.documentElement.requestFullscreen && document.documentElement.requestFullscreen()).then(() => screen.orientation.lock('landscape')).catch(() => {});
+  } else {
+    $('#cc').hidden = true; if (MIC){ MIC.getTracks().forEach(t => t.stop()); MIC = null; } startCamera(); pickNum();
+    const exitFs = () => { try { document.fullscreenElement && document.exitFullscreen(); } catch(e){} };
+    try { Promise.resolve(screen.orientation.lock('portrait')).catch(exitFs); } catch(e){ exitFs(); }
+  }
+  for (const p of M.peers.values()) resetPeer(p);
+  announce(); peersUi(); gridUi();
+}
+setInterval(() => {
+  if (M.role !== 'master') return;
+  const now = Date.now(); $('#cc').classList.toggle('alarm', !$('#c112').hidden);
+  if (INC.on && now - INC.last > 180000) INC.on = false;                     // uzun süre görülmediyse olay kapanır
+  for (const [id, t] of tiles){ const c = INC.cams.get(id), live = !!(c && c.seen && now - c.seen < 3500);
+    t.el.classList.toggle('hot', live && !$('#c112').hidden); drawBoxes(t, live && now - c.seen < 1200 ? c : null); }
+  $('#ccClock').textContent = new Date().toLocaleTimeString('tr-TR');
+}, 250);
+let lastThr = 0, thrOn = false;
+
+/* ================== TEHDİT ONAYI & TEST ================== */
+function thumb(c){
+  const k = Math.min(1, 240 / Math.max(c.width, c.height)), t = document.createElement('canvas');
+  t.width = Math.max(1, c.width * k | 0); t.height = Math.max(1, c.height * k | 0);
+  t.getContext('2d').drawImage(c, 0, 0, t.width, t.height); return t.toDataURL('image/jpeg', .6);
+}
+async function confirmThreat(){}
+function testAlarm(){}
+
+/* ================== UZAKTAN KAMERA KONTROLÜ · İNTERKOM · SAĞLIK MONİTÖRÜ · MENÜ ================== */
+const CAM = { nv: 'auto', zoom: 1, torch: false };                          // yerel kameranın ayarları (komuta ile çift yönlü eşleşir)
+const DEFST = { nv: 'auto', night: false, zoom: 1, torch: false, torchOk: true, bat: -1, chg: false, fps: 0 };
+const IC = new Audio(); IC.autoplay = true; IC.setAttribute('playsinline', '');   // interkom çıkışı (kamera hoparlörü)
+let BAT = null, MIC = null;
+const toCam = (p, o) => { if (VIEW && o.type !== 'ping') return false; if (p && p.dc && p.dc.readyState === 'open'){ p.dc.send(JSON.stringify(o)); return true; } return false; };
+const silent = () => { try { return actx().createMediaStreamDestination().stream.getAudioTracks()[0]; } catch(e){ return null; } };
+const playIntercom = e => { IC.srcObject = new MediaStream([e.track]); IC.play().catch(() => {}); };
+const NVT = { auto: 'Otomatik', on: 'Açık', off: 'Kapalı' };
+
+/* ----- kamera tarafı ----- */
+function nvUi(){}
+function setZoom(){}
+async function setTorch(){}
+function applyCam(){}
+let ssAt = 0;
+function sendState(){}
+function camCmd(){}
+
+/* ----- komuta tarafı ----- */
+function ccRemote(m, p){
+  if (m.type === 'ac') return acPulse(p.id, m);
+  if (m.type === 'tel') return telUi(p.id, m);
+  if (m.type === 'state'){
+    const n = (v, a, b, d) => Number.isFinite(+v) ? Math.max(a, Math.min(b, +v)) : d, t = tiles.get(p.id);
+    p.st = { nv: ['auto', 'on', 'off'].includes(m.nv) ? m.nv : 'auto', night: !!m.night, zoom: n(m.zoom, 1, 4, 1), torch: !!m.torch, torchOk: !!m.torchOk,
+      bat: Math.round(n(m.bat, -1, 100, -1)), chg: !!m.chg, fps: Math.round(n(m.fps, 0, 999, 0)) };
+    if (t && Date.now() < t.hold && p.zoomL) p.st.zoom = p.zoomL;          // kaydırıcıyı sürüklerken eski değer üzerine yazmasın
+    p.stAt = Date.now(); tileUi(p);
+  } else if (m.type === 'pong' && Number.isFinite(+m.t)){ p.ping = Math.round(Math.max(0, Date.now() - +m.t)); tileUi(p); }
+}
+function tileUi(p){
+  const t = tiles.get(p.id); if (!t) return;
+  const s = p.st || DEFST, stale = !p.stAt || Date.now() - p.stAt > 7000;
+  t.v.classList.toggle('night', s.night);
+  t.v.style.transform = t.c.style.transform = s.zoom > 1 ? 'scale(' + s.zoom + ')' : '';
+  if (Date.now() >= t.hold) t.zr.value = Math.round(s.zoom * 100);
+  t.zo.textContent = s.zoom.toFixed(1) + '×';
+  t.nvB.textContent = '🌙 Gece: ' + NVT[s.nv];
+  t.tB.textContent = s.torch ? '🔦 Flaş Söndür' : '🔦 Flaş Yak'; t.tB.disabled = !s.torchOk; t.tB.classList.toggle('ghost', !s.torch);
+  t.hl.textContent = stale ? '⚠ veri yok' : (s.bat < 0 ? '🔋 –' : (s.chg ? '⚡' : '🔋') + ' %' + s.bat) + ' · ' + (p.ping != null ? p.ping + ' ms' : '– ms') + ' · ' + s.fps + ' FPS';
+  t.hl.classList.toggle('bad', stale || (s.bat >= 0 && s.bat < 20 && !s.chg) || p.ping > 400);
+}
+function ccZoom(id, z){
+  const p = M.peers.get(id), t = tiles.get(id); if (!p || !t) return;
+  z = Math.max(1, Math.min(4, z)); p.zoomL = z; p.st = Object.assign({}, DEFST, p.st, { zoom: z }); t.hold = Date.now() + 1500; tileUi(p);
+  const n = performance.now(), send = () => toCam(p, { type: 'ctl', zoom: z });
+  clearTimeout(t.zt); if (n - (t.zs || 0) > 80){ t.zs = n; send(); } else t.zt = setTimeout(send, 90);
+}
+function mkTile(p){
+  const id = p.id, el = document.createElement('div'); el.className = 'tile';
+  el.innerHTML = '<video autoplay muted playsinline></video><canvas></canvas><div class="cap"></div><div class="hlth"></div><div class="tctl">'
+    + '<button class="btn ghost" data-a="nv"></button><label class="zm">🔍<input type="range" min="100" max="400" value="100" aria-label="Zoom"><output></output></label>'
+    + '<button class="btn ghost" data-a="torch"></button><button class="btn ghost" data-a="siren">🚨 Siren Çal</button><button class="btn ghost" data-a="strobe">⚡ Strobe Çakar</button><button class="btn ghost" data-a="thermal">🔥 Termal</button><button class="btn ghost" data-a="ll">🌗 Işık: auto</button>'
+    + '<button class="btn ghost" data-a="ptt">🎤 Canlı Ses Anonsu (Interkom)</button></div>';
+  const q = s => el.querySelector(s), t = { el, v: q('video'), c: q('canvas'), cap: q('.cap'), hl: q('.hlth'), nvB: q('[data-a=nv]'), tB: q('[data-a=torch]'), zr: q('input'), zo: q('output'), hold: 0, pz: 0 };
+  const P = () => M.peers.get(id), zoomOf = () => (P() && P().st || DEFST).zoom, ptr = new Map(); let d0 = 0;
+  const dist = () => { const a = [...ptr.values()]; return a.length === 2 ? Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) : 0; };
+  el.ondblclick = e => {
+    if (e.target.closest('.tctl') || Date.now() - t.pz < 450) return;
+    const on = !el.classList.contains('big'), g = $('#ccGrid');
+    tiles.forEach(x => x.el.classList.remove('big')); el.classList.toggle('big', on); g.classList.toggle('hasBig', on); g.scrollTop = 0; fitSingle();
+  };
+  el.addEventListener('pointerdown', e => { if (!e.target.closest('.tctl')){ ptr.set(e.pointerId, { x: e.clientX, y: e.clientY }); d0 = dist(); } });
+  el.addEventListener('pointermove', e => {
+    if (!ptr.has(e.pointerId)) return; ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const d = dist(); if (d && d0){ t.pz = Date.now(); ccZoom(id, zoomOf() * d / d0); } d0 = d;
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(n => el.addEventListener(n, e => { ptr.delete(e.pointerId); d0 = 0; }));
+  el.addEventListener('wheel', e => { if (!el.classList.contains('big')) return; e.preventDefault(); ccZoom(id, zoomOf() * (e.deltaY < 0 ? 1.1 : .9)); }, { passive: false });
+  const tc = q('.tctl'), pb = q('[data-a=ptt]'); tc.oncontextmenu = e => e.preventDefault();
+  tc.onclick = e => {
+    const b = e.target.closest('button'), p = P(); if (!b || !p) return; const a = b.dataset.a, s = p.st || DEFST;
+    if (a === 'll'){ p.llm = { auto: 'on', on: 'off', off: 'auto' }[p.llm || 'auto']; toCam(p, { type: 'll', mode: p.llm }); b.textContent = '🌗 Işık: ' + p.llm; } else if (a === 'thermal') t.v.classList.toggle('thermal'); else if (a === 'strobe'){ toCam(p, { type: 'strobe' }); tl('Strobe: ' + (p.loc || p.id)); } else if (a === 'nv') toCam(p, { type: 'ctl', nv: { auto: 'on', on: 'off', off: 'auto' }[s.nv] });
+    else if (a === 'torch') toCam(p, { type: 'ctl', torch: !s.torch });
+    else if (a === 'siren'){ toCam(p, { type: 'siren' }); b.textContent = '🚨 Siren Çalınıyor…'; setTimeout(() => { b.textContent = '🚨 Siren Çal'; }, 3000); }
+  };
+  t.zr.oninput = () => ccZoom(id, t.zr.value / 100);
+  pb.onpointerdown = e => {                                                  // basılı tut = canlı anons (bırakınca kesilir)
+    e.preventDefault(); const p = P(); if (!p) return; pttStart(p, pb);
+    const up = () => { removeEventListener('pointerup', up); removeEventListener('pointercancel', up); pttStop(p, pb); };
+    addEventListener('pointerup', up); addEventListener('pointercancel', up);
+  };
+  return t;
+}
+/* ----- canlı ses interkomu: komuta mikrofonu -> WebRTC -> kameranın hoparlörü ----- */
+const aTr = p => p.pc && p.pc.getTransceivers().find(x => x.receiver.track.kind === 'audio');
+async function pttStart(p, b){ if (VIEW) return;
+  p.want = true; const tr = aTr(p);
+  if (!tr || !p.dc || p.dc.readyState !== 'open'){ toast('Bu kameranın interkom bağlantısı hazır değil.', 3500); return; }
+  try { if (!MIC || MIC.getAudioTracks()[0].readyState !== 'live') MIC = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+  catch(e){ toast('Mikrofon izni verilmedi veya mikrofon bulunamadı.', 4000); return; }
+  if (!p.want) return;
+  const k = MIC.getAudioTracks()[0]; k.enabled = true;
+  try { await tr.sender.replaceTrack(k); } catch(e){ toast('Ses yayını başlatılamadı.', 3500); return; }
+  if (!p.want) return pttStop(p, b);
+  toCam(p, { type: 'ptt', on: true }); b.classList.add('live'); b.textContent = '🎤 ANONS YAYINDA…';
+}
+async function pttStop(p, b){
+  p.want = false; const tr = aTr(p);
+  if (tr) try { await tr.sender.replaceTrack(null); } catch(e){}
+  if (MIC) MIC.getAudioTracks().forEach(k => { k.enabled = false; });
+  toCam(p, { type: 'ptt', on: false }); b.classList.remove('live'); b.textContent = '🎤 Canlı Ses Anonsu (Interkom)';
+}
+
+/* ----- ayarlar menüsü: aşağıdan yukarı açılış, sayfa kaydırma, kapanışta tüm alt panelleri kapatma ----- */
+let hudT = 0;
+function showPage(id){
+  document.querySelectorAll('.pg').forEach(e => { e.hidden = e.id !== id; e.classList.remove('cur', 'inR', 'inL', 'outL', 'outR'); });
+  $('#' + id).classList.add('cur');
+}
+function nav(to, dir = 1){                                                   // dir 1: sağdan sola (ileri), -1: soldan sağa (geri)
+  const cur = document.querySelector('.pg.cur'), nx = $('#' + to); if (!nx || cur === nx) return;
+  nx.hidden = false; nx.classList.add('cur', dir > 0 ? 'inR' : 'inL'); cur.classList.remove('cur'); cur.classList.add(dir > 0 ? 'outL' : 'outR');
+  setTimeout(() => { if (!cur.classList.contains('cur')) cur.hidden = true; cur.classList.remove('outL', 'outR'); nx.classList.remove('inR', 'inL'); }, 300);
+}
+function openSettings(){
+  const h = $('#hud'); if (!h.hidden && !h.classList.contains('sldn')) return;
+  clearTimeout(hudT); h.classList.remove('sldn'); h.hidden = false; h.classList.add('slup');
+  $('#gear').textContent = '✕'; $('#gear').setAttribute('aria-expanded', true);
+}
+function closeSettings(now){
+  const h = $('#hud'); if (h.hidden) return; clearTimeout(hudT);
+  const fin = () => { h.hidden = true; h.classList.remove('slup', 'sldn'); showPage('pg-main'); };   // Kamera Bağla / Geçmiş dahil tüm alt paneller kapanır
+  $('#gear').textContent = '⚙️'; $('#gear').setAttribute('aria-expanded', false);
+  if (now) return fin();
+  h.classList.remove('slup'); h.classList.add('sldn'); hudT = setTimeout(fin, 290);
+}
+
+function initExtras(){
+  const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch(e){} return null; };
+  document.querySelectorAll('[data-back]').forEach(b => b.onclick = () => nav('pg-main', -1));
+  $('#rmtX').onclick = closeRmt;
+  $('#gear').onclick = () => { const h = $('#hud'); if (h.hidden || h.classList.contains('sldn')) openSettings(); else closeSettings(); };
+  $('#mic').onclick = micToggle;
+  $('#netb').onclick = () => nav('net', 1);
+  $('#hb').onclick = () => { renderHist(); nav('hist', 1); };
+  $('#hclr').onclick = async () => { await BB.clear(); renderHist(); };
+  $('#ccb').onclick = () => { closeSettings(true); setRole('master'); };
+  $('#ccX').onclick = () => setRole('cam');
+  $('#ccEnd').onclick = ccEnd;
+  $('#ccCopy').onclick = async e => {
+    const b = e.currentTarget, ta = $('#ccMsg'); let ok = false;
+    try { await navigator.clipboard.writeText(ta.value); ok = true; }
+    catch(err){ try { ta.focus(); ta.select(); ok = document.execCommand('copy'); } catch(e2){} }
+    b.textContent = ok ? '✅ Kopyalandı' : '⚠ Kopyalanamadı — metni elle seç'; setTimeout(() => { b.textContent = '📋 Metni Kopyala'; }, 1800);
+  };
+  $('#ccAddr').value = ls('ccAddr') || ''; $('#ccAddr').oninput = e => ls('ccAddr', e.target.value);
+  let taps = [];                                               // gizli test: kamera adına 5 hızlı dokunuş
+  $('#camName').onclick = () => { const n = performance.now(); taps = taps.filter(x => n - x < 2000).concat(n); if (taps.length >= 5){ taps = []; testAlarm(); } };
+  const urlCode = () => { let h = 2166136261; for (const ch of location.origin + location.pathname) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return 'AUTO' + (h >>> 0).toString(36); };
+  const roomParam = new URLSearchParams(location.search).get('room');
+  M.code = ls('meshCode') || '';
+  $('#netCode').value = ''; M.loc = ls('camLoc:' + M.code) || '';
+  $('#locIn').value = M.loc; $('#locIn').oninput = e => { M.loc = e.target.value.trim(); ls('camLoc:' + M.code, M.loc); announce(); peersUi(); };
+  $('#netGo').onclick = () => { if (normCode($('#netCode').value)) pairUi($('#netCode').value); };
+  $('#netCopy').style.display = 'none';
+  setInterval(() => { $('#clock').textContent = new Date().toLocaleTimeString('tr-TR'); }, 1000);
+  if (navigator.geolocation) navigator.geolocation.watchPosition(p => { fix(p); showGps(); }, showGps, { maximumAge: 20000, timeout: 20000 }); else showGps();
+  const lc = document.createElement('canvas'); lc.width = lc.height = 16; const lx = lc.getContext('2d', { willReadFrequently: true }); let lum = null;
+  setInterval(() => {
+    if (!stream || video.readyState < 2) return;
+    lx.drawImage(video, 0, 0, 16, 16); const d = lx.getImageData(0, 0, 16, 16).data; let t = 0;
+    for (let i = 0; i < d.length; i += 4) t += .299 * d[i] + .587 * d[i + 1] + .114 * d[i + 2];
+    lum = lum === null ? t / 256 : lum * .7 + (t / 256) * .3;
+    const want = CAM.nv === 'auto' ? (nightOn ? lum < 85 : lum < 55) : CAM.nv === 'on';
+    if (want !== nightOn){ nightOn = want; nvUi(); sendState(); }
+  }, 500);
+  $('#hudX').onclick = () => closeSettings();
+  $('#nv').onclick = () => applyCam({ nv: { auto: 'on', on: 'off', off: 'auto' }[CAM.nv] });
+  $('#tch').onclick = () => applyCam({ torch: !CAM.torch });
+  $('#zoom').oninput = e => applyCam({ zoom: e.target.value / 100 });
+  if (navigator.getBattery) navigator.getBattery().then(b => { BAT = b; b.onlevelchange = b.onchargingchange = sendState; }).catch(() => {});
+  setInterval(sendState, 2000);
+  setInterval(() => { if (M.role !== 'master') return;                      // komuta: gecikme ölçümü (ping/pong) + kart yenileme
+    for (const p of M.peers.values()){ if (p.role === 'cam') toCam(p, { type: 'ping', t: Date.now() }); tileUi(p); } }, 2000);
+  const SCHOOL = 'Hüseyin Celal Yardımcı Fen Lisesi - Güvenlik Komuta Merkezi', sn = $('#ccSchool');
+  const showLogo = d => { $('#ccLogo').src = d; $('#ccLogo').hidden = false; $('#ccLogoPh').hidden = true; };
+  const lg = ls('ccLogo'); if (lg && /^data:image\/png;base64,[A-Za-z0-9+\/=]+$/.test(lg)) showLogo(lg);
+  sn.textContent = (ls('ccSchool') || SCHOOL).slice(0, 90);
+  sn.onkeydown = e => { if (e.key === 'Enter'){ e.preventDefault(); sn.blur(); } };
+  sn.onpaste = e => { e.preventDefault(); document.execCommand('insertText', false, e.clipboardData.getData('text/plain').replace(/\s+/g, ' ')); };
+  sn.onblur = () => { const v = sn.textContent.trim().slice(0, 90) || SCHOOL; sn.textContent = v; ls('ccSchool', v); };
+  $('#ccLogoIn').onchange = e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f || !/^image\//.test(f.type)) return;
+    const u = URL.createObjectURL(f), im = new Image();
+    im.onload = () => { const k = Math.min(1, 192 / Math.max(im.width, im.height)), c = document.createElement('canvas');
+      c.width = Math.max(1, im.width * k | 0); c.height = Math.max(1, im.height * k | 0);
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(u);
+      const d = c.toDataURL('image/png'); ls('ccLogo', d); showLogo(d); };
+    im.onerror = () => URL.revokeObjectURL(u); im.src = u;
+  };
+  peersUi();
+  loadScript('https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js').then(() => { if (M.code) meshStart(); if (!M.code || PAIRQ) pairUi(PAIRQ); })
+    .catch(() => { $('#netSt').textContent = 'Mesh kapalı: keşif için internet / MQTT erişimi gerekli.'; });
+}
+
+/* ================== BAŞLAT ================== */
+$('#conf').addEventListener('input', e => {
+  CONFIG.CONF = e.target.value / 100; $('#confV').textContent = e.target.value;
+});
+addEventListener('resize', resize);
+addEventListener('orientationchange', () => setTimeout(resize, 300));
+addEventListener('pagehide', () => stream && stream.getTracks().forEach(t => t.stop()));
+let strobing = false;
+const TL = (() => { try { return JSON.parse(localStorage.getItem('tlog') || '[]'); } catch(e){ return []; } })();
+function tl(msg){ TL.push({ ts: Date.now(), msg }); if (TL.length > 300) TL.shift(); try { localStorage.setItem('tlog', JSON.stringify(TL)); } catch(e){} }
+async function strobe(){}
+/* ═══ MODÜL: ALGI: ROI zoom, ısı haritası, akustik radar, QR ═══ */
+let ROI = null, roiN = 0, lastFull = [], acT = 0, qrDone = '';
+const HEAT = new Map();
+document.head.insertAdjacentHTML('beforeend', '<style>.thermal{filter:url(#thF) contrast(1.2)!important}.acp{outline:2px solid var(--red)}.acp::before,.acp::after{content:"";position:absolute;left:50%;top:50%;width:140%;aspect-ratio:1;translate:-50% -50%;border-radius:50%;pointer-events:none;border:3px solid rgba(255,71,87,.85);box-shadow:0 0 24px rgba(255,71,87,.6);opacity:0;z-index:3;animation:acw 1.7s ease-out 3}.acp::after{animation-delay:.55s}@keyframes acw{0%{transform:scale(.1);opacity:.9}100%{transform:scale(1);opacity:0}}.hr{display:grid;grid-template-columns:90px 1fr;gap:6px;align-items:center;margin-top:6px}.hr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hr i{display:block;height:10px;border-radius:5px;transition:width .4s}#tQr{background:#fff;padding:6px;border-radius:10px;display:grid;place-items:center;margin-top:6px;color:#000;word-break:break-all}#tQr svg{width:100%;max-width:200px;height:auto}</style>');
+setInterval(() => { for (const [k, v] of HEAT) HEAT.set(k, v * .97); }, 2000);
+function heatAdd(id, w){ if (id) HEAT.set(id, (HEAT.get(id) || 0) + w); }
+function heatUi(el){
+  el.textContent = '';
+  const cs = [...M.peers.values()].filter(p => p.role === 'cam');
+  if (!cs.length){ el.textContent = 'Kamera yok'; return; }
+  const mx = Math.max(1, ...cs.map(p => HEAT.get(p.id) || 0));
+  for (const p of cs){
+    const r = (HEAT.get(p.id) || 0) / mx, row = document.createElement('div'), s = document.createElement('span'), i = document.createElement('i');
+    row.className = 'hr'; s.textContent = p.loc || 'Kamera ' + (p.n || '?'); i.style.width = Math.max(4, r * 100) + '%'; i.style.background = 'hsl(' + (55 - 55 * r) + ' 100% 50%)';
+    row.append(s, i); el.append(row);
+  }
+}
+function acCheck(){}
+function acPulse(id, m){
+  const t = tiles.get(id); if (!t) return;
+  t.el.classList.remove('acp'); void t.el.offsetWidth; t.el.classList.add('acp'); setTimeout(() => t.el.classList.remove('acp'), 5200);
+  heatAdd(id, 2); tl('Akustik radar: ' + (t.cap.textContent || id) + ' — ' + String(m.why || '').slice(0, 40) + ' (' + (+m.db || 0) + ' dB)');
+}
+function toggleThermal(){}
+function setRoi(){}
+function clearRoi(){}
+async function roiScan(){}
+async function qr(){}
+/* ═══ MODÜL: AI: Türkçe sınıflar, eşkal analizi, Re-ID ═══ */
+const SUSP = [], SUS = [], RC = document.createElement('canvas'), rctx = RC.getContext('2d', { willReadFrequently: true });
+RC.width = RC.height = 10;
+function trLabel(){}
+const rgb3 = v => Array.isArray(v) && v.length === 3 && v.every(x => Number.isFinite(+x)) ? v.map(x => Math.max(0, Math.min(255, +x | 0))) : null;
+function colorName(){}
+function region(){}
+function personColors(){}
+const colorD = (a, b) => a && b ? Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) : 999;
+function ridMatch(a, b){ const t = colorD(a.pt, b.pt), u = colorD(a.pb, b.pb); return t < 80 && u < 80 && t + u < 130; }
+function ridAdd(c){ if (c && c.pt && c.pb && !SUSP.some(s => ridMatch(s, c))) SUSP.push({ pt: c.pt, pb: c.pb, ts: Date.now() }); }
+const personCls = () => classes.findIndex(c => /^(person|insan|kişi)$/i.test(c.name));
+function ridProfile(){}
+function ridScan(){}
+function susReg(m){
+  if (!m.pt || !m.pb) return null;
+  let s = SUS.find(x => ridMatch(x, m)); const isNew = !s;
+  if (!s){ s = { n: SUS.length + 1, pt: m.pt, pb: m.pb }; SUS.push(s); }
+  return { s, isNew };
+}
+const susLine = m => m.sus ? 'Şüpheli #' + m.sus.s.n + ' (toplam şüpheli: ' + SUS.length + ')\nEşkal (yalnızca kıyafet rengi): ' + m.attr + '\n' : '';
+function susNote(m, p){ const x = m.sus; if (x && x.isNew) ccAppend('Şüpheli #' + x.s.n + ' eklendi — ' + m.attr + ' — [' + pname(p) + '] — toplam şüpheli: ' + SUS.length); }
+/* ═══ MODÜL: SAHA KAMERASI: güç yönetimi, çevrimdışı kuyruk, telemetri, anons ═══ */
+const SAY = ['Dikkat. Bu bölge güvenlik kameraları tarafından izlenmektedir. Güvenlik ekipleri bilgilendirildi.', 'Telsiz. Tüm birimler dikkat. Şüpheli durum bildirildi. Güvenlik devriyesi bölgeye yönlendirildi.', 'Uyarı. Bu alan kayıt altındadır. Lütfen sakin olun ve elinizdeki nesneyi yere bırakın.'];
+const PW = { until: 0, mode: 'tam', prev: null, auto: localStorage.getItem('pwAuto') !== '0' };
+let DIS = null;
+const MC = document.createElement('canvas'), mctx = MC.getContext('2d', { willReadFrequently: true });
+MC.width = MC.height = 24;
+document.head.insertAdjacentHTML('beforeend', '<style>#c112Pics{display:flex;gap:6px;flex-wrap:wrap}#c112Pics img{height:84px;max-width:48%;object-fit:cover;border-radius:8px;border:1px solid var(--red);background:#000}.tel{position:absolute;left:8px;bottom:26px;z-index:2;padding:3px 7px;border-radius:8px;background:rgba(0,0,0,.62);font:11px ui-monospace,monospace;color:#9ef;pointer-events:none}.notel .tel{display:none}#tdm select{padding:9px;border-radius:10px;background:rgba(0,0,0,.4);color:var(--text);border:1px solid var(--line)}</style>');
+document.body.insertAdjacentHTML('beforeend', '<div class="pinbox" id="tdm"><div class="glass"><b>🚨 Tehdit onaylandı — taktiksel anons?</b><small id="tdmInfo"></small><select id="tdmSel"><option value="0">📢 Caydırıcı duyuru</option><option value="1">📻 Telsiz: devriye yönlendirildi</option><option value="2">⚠ Sakin kalma / nesneyi bırakma uyarısı</option></select><button class="btn" id="tdmOk">✅ Onayla ve yayınla</button><button class="btn ghost" id="tdmNo">Reddet</button></div></div>');
+function motion(){}
+setInterval(() => {
+  if (M.role !== 'cam' || !stream) return;
+  const now = performance.now(), pi = personCls();
+  const mv = motion(); if (mv || thrOn || sens() || ROI || rawList.some(d => d.cls === pi || isTh(d.cls))) PW.until = now + 4000;
+  llUpdate(); $('#pwSt').textContent = 'Güç modu: ' + PW.mode + ' · AI ' + fps.toFixed(0) + ' FPS';
+}, 250);
+function idleDelay(){}
+const OB = {
+  open: () => new Promise((ok, no) => { const r = indexedDB.open('outbox', 1); r.onupgradeneeded = () => r.result.createObjectStore('q', { autoIncrement: true }); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); }),
+  async run(mode, f){ const db = await this.open(); return new Promise((ok, no) => { const t = db.transaction('q', mode), q = f(t.objectStore('q')); t.oncomplete = () => ok(q && q.result); t.onerror = () => no(t.error); }); },
+};
+const masterOpen = () => [...M.peers.values()].some(p => p.role === 'master' && p.dc && p.dc.readyState === 'open');
+async function obAdd(){}
+async function obUi(){}
+async function obFlush(){}
+setInterval(() => {
+  if (M.role !== 'cam' || !session) return;
+  sendMasters({ type: 'tel', ms: Math.round(lastMs), fps: Math.round(fps), mem: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : -1, duty: Math.min(100, Math.round(lastMs * fps / 10)), pw: PW.mode });
+}, 2000);
+function telUi(id, m){
+  const t = tiles.get(id), p = M.peers.get(id), n = v => Number.isFinite(+v) ? +v : 0; if (!t) return;
+  if (p) p.tel = { ms: n(m.ms), fps: n(m.fps) };
+  let e = t.el.querySelector('.tel'); if (!e){ e = document.createElement('div'); e.className = 'tel'; t.el.appendChild(e); }
+  e.textContent = '⏱ ' + n(m.ms) + ' ms · 🧠 ' + n(m.fps) + ' FPS · 💾 ' + (n(m.mem) >= 0 ? n(m.mem) + ' MB' : '—') + ' · ⚙ ~%' + n(m.duty) + ' yük · ' + String(m.pw || '').slice(0, 14);
+}
+function frameThumb(){}
+function cropThumb(){}
+function picsUi(m){
+  const box = $('#c112Pics'); box.textContent = '';
+  for (const [src, cap] of [[m.psn, 'Eşkal'], [m.frm, 'Tespit karesi'], [m.snap, 'Nesne']]) if (src){ const i = new Image(); i.src = src; i.alt = i.title = cap; box.append(i); }
+}
+function askDisrupt(m, p){
+  if (VIEW || m.late || !p || !p.id || DIS) return;
+  DIS = p.id; $('#tdmInfo').textContent = pname(p) + ': ' + m.label + (m.test ? ' (TATBİKAT)' : ''); $('#tdm').classList.add('on');
+}
+function disruptNo(){ DIS = null; $('#tdm').classList.remove('on'); }
+function disruptOk(){
+  const p = M.peers.get(DIS), k = +$('#tdmSel').value;
+  if (p && toCam(p, { type: 'say', k })) tl('Operatör onaylı anons gönderildi: #' + k + ' → ' + pname(p));
+  disruptNo();
+}
+$('#tdmOk').onclick = disruptOk; $('#tdmNo').onclick = disruptNo;
+function say(){}
+/* ═══ MODÜL: ROLLER: Saha İzleyicisi ve düşük ışık ═══ */
+let VIEW = true;
+const LL = { mode: localStorage.getItem('llMode') || 'auto', g: 1 };
+document.head.insertAdjacentHTML('beforeend', '<style>.view .opOnly,.view .tctl,.view #ccEnd,.view #ccCall{display:none!important}#roleTag{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}</style>');
+const llName = { auto: 'Otomatik', on: 'Açık', off: 'Kapalı' };
+const llUi = () => { $('#llB').textContent = '🌗 Düşük ışık: ' + llName[LL.mode]; };
+function llSet(){}
+const llFilter = () => LL.g > 1.05 ? 'brightness(' + LL.g.toFixed(2) + ') contrast(' + (1 + (LL.g - 1) * .25).toFixed(2) + ')' : '';
+function llUpdate(){}
+function viewerInit(){}
+/* ═══ MODÜL: ÇEKİRDEK: uygulama türü (?app=cam|command|viewer), siren, yerleşim ═══ */
+const FLAVOR = 'viewer';
+let loopT = 0;
+const SRN = { on: false, next: 0, iv: 0, to: 0 };
+document.head.insertAdjacentHTML('beforeend', `<style>
+.cc header{flex-wrap:wrap;gap:6px}
+.cc header .btn,.tdr .btn,#pwB,#llB,#vwB{min-height:38px}
+#pwB,#llB,#vwB{width:100%}
+#c112{max-height:calc(100dvh - 16px);overflow:auto;overscroll-behavior:contain}
+#c112 .row,.tile .tctl{flex-wrap:wrap}
+.tile .tctl .btn{padding:6px 9px;font-size:11px;min-height:32px}
+.tel{max-width:calc(100% - 16px);white-space:normal}
+.glass{border:1px solid rgba(120,255,170,.18);box-shadow:0 8px 28px rgba(0,0,0,.5)}
+.cc header b,.tdr h3,#roleTag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.6px;text-transform:uppercase}
+.tile{touch-action:manipulation}
+.ccGrid.single{align-content:center;justify-content:center}
+#sirenOff{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:40;background:var(--red);color:#fff;border-color:transparent;padding:12px 22px;animation:sob 1.2s infinite}
+#sirenOff[hidden]{display:none!important}
+@keyframes sob{0%{box-shadow:0 0 0 0 rgba(255,71,87,.6)}70%,100%{box-shadow:0 0 0 14px rgba(255,71,87,0)}}
+@media (max-width:640px){.cc header{font-size:12px}.cc header .btn{padding:6px 8px;font-size:11px}.tdr{width:100vw}#c112Pics img{height:64px}}
+</style>`);
+document.body.insertAdjacentHTML('beforeend', '<button class="btn" id="sirenOff" hidden>🔇 Alarmı Kapat</button>');
+function sirenStop(){
+  clearInterval(SRN.iv); clearTimeout(SRN.to);
+  if (SRN.on){ try { const t = SRN.c.currentTime; SRN.g.gain.cancelScheduledValues(t); SRN.g.gain.setTargetAtTime(.0001, t, .05); SRN.o.stop(t + .4); SRN.o2.stop(t + .4); } catch(e){} }
+  SRN.on = false; A.mute = performance.now() + 1000; $('#sirenOff').hidden = true;
+}
+function siren(sec = 0){
+  try {
+    if (SRN.on){ if (!sec) clearTimeout(SRN.to); return; }
+    const c = actx(); c.resume();
+    const o = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain(), lp = c.createBiquadFilter(), dl = c.createDelay(), fb = c.createGain(), wet = c.createGain();
+    o.type = 'triangle'; o2.type = 'sine'; lp.type = 'lowpass'; lp.frequency.value = 2400; dl.delayTime.value = .17; fb.gain.value = .35; wet.gain.value = .3;
+    g.gain.setValueAtTime(.0001, c.currentTime); g.gain.exponentialRampToValueAtTime(.22, c.currentTime + .06);
+    o.connect(g); o2.connect(g); g.connect(lp); lp.connect(c.destination); lp.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(wet); wet.connect(c.destination);
+    Object.assign(SRN, { on: true, c, o, o2, g, next: c.currentTime }); let k = 0;
+    const sched = () => { const t = Math.max(c.currentTime, SRN.next); for (let i = 0; i < 4; i++){ const f = k++ % 2 ? 720 : 960; o.frequency.setValueAtTime(f, t + i * .5); o2.frequency.setValueAtTime(f * 1.005, t + i * .5); } SRN.next = t + 2; };
+    sched(); SRN.iv = setInterval(sched, 1500); o.start(); o2.start();
+    A.mute = performance.now() + (sec ? sec * 1000 + 1000 : 1e9); $('#sirenOff').hidden = false;
+    if (sec) SRN.to = setTimeout(sirenStop, sec * 1000);
+  } catch(e){}
+}
+$('#sirenOff').onclick = sirenStop; $('#ccEnd').addEventListener('click', sirenStop);
+function fitSingle(){
+  const g = $('#ccGrid'), ts = [...tiles.values()], cs = getComputedStyle(g);
+  const cw = g.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), ch = g.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  g.classList.toggle('single', ts.length === 1);
+  for (const t of ts){
+    const v = t.v, st = t.el.style;
+    if (ts.length === 1 && v.videoWidth && cw > 0 && ch > 0 && !t.el.classList.contains('big')){
+      const k = Math.min(cw / v.videoWidth, ch / v.videoHeight); st.flex = '0 0 auto'; st.width = Math.floor(v.videoWidth * k) + 'px'; st.height = Math.floor(v.videoHeight * k) + 'px';
+    } else { st.flex = st.width = st.height = ''; }
+  }
+}
+['loadedmetadata', 'resize'].forEach(n => $('#ccGrid').addEventListener(n, fitSingle, true));
+new ResizeObserver(fitSingle).observe($('#ccGrid'));
+if (FLAVOR !== 'all'){
+  ({ cam: ['#ccb', '#vwB'], command: ['#vwB'], viewer: ['#ccb'] }[FLAVOR] || []).forEach(s => { const e = $(s); if (e) e.style.display = 'none'; });
+  if (FLAVOR === 'command') setTimeout(() => $('#ccb').click(), 800);
+  if (FLAVOR === 'viewer') setTimeout(() => setRole('master'), 500);
+}
+/* ═══ MODÜL: KOMUTA MERKEZİ: taktik menü, PIN, sesli komut, kanıt paketi ═══ */
+/* ═══ MODÜL: EŞLEŞME KODU (5 dk geçerli, kodla veya QR ile) ═══ */
+const PAIR_MS = 300000, ALPH = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const normCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const rnd = n => [...crypto.getRandomValues(new Uint8Array(n))].map(x => ALPH[x % ALPH.length]).join('');
+async function lobbyOf(c){
+  const E = new TextEncoder(), base = await crypto.subtle.importKey('raw', E.encode('pair:' + c), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: E.encode('yolo-pair-v1'), iterations: 50000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', E.encode('lobby:' + c)));
+  return { key, topic: 'yolomesh/p/' + [...d.slice(0, 8)].map(x => x.toString(16).padStart(2, '0')).join('') };
+}
+async function pSeal(L, o){ const iv = crypto.getRandomValues(new Uint8Array(12)); return b64(iv) + '.' + b64(new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, L.key, new TextEncoder().encode(JSON.stringify({ ...o, ts: Date.now() }))))); }
+async function pOpen(L, t){ const [a, c] = t.split('.'); return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(a) }, L.key, unb64(c)))); }
+const fmtCode = c => c.slice(0, 5) + '-' + c.slice(5);
+
+const PAIRQ = new URLSearchParams(location.search).get('pair') || '';
+let pairStop = null;
+document.head.insertAdjacentHTML('beforeend', '<style>#pairBox{position:fixed;inset:0;z-index:30;display:none;place-items:center;background:rgba(5,8,12,.85)}#pairBox.on{display:grid}#pairBox>div{padding:18px;border-radius:18px;display:grid;gap:10px;width:min(90vw,340px)}#pairBox input{padding:12px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.4);color:var(--text);font-size:18px;text-align:center;letter-spacing:2px;text-transform:uppercase}#pairBox video{width:100%;border-radius:12px}</style>');
+document.body.insertAdjacentHTML('beforeend', '<div id="pairBox"><div class="glass"><b>🔗 Komuta merkezine bağlan</b><small>Komuta merkezinde gösterilen eşleşme kodunu gir veya QR okut. Kod 5 dakika geçerlidir.</small><input id="pairIn" placeholder="XXXXX-XXXXX" autocapitalize="characters" autocomplete="off" maxlength="14"><button class="btn" id="pairGo">Bağlan</button><button class="btn ghost" id="pairQr">📷 QR Okut</button><video id="pairV" playsinline muted hidden></video><small id="pairMsg"></small></div></div>');
+const pairSay = t => { $('#pairMsg').textContent = t; };
+function pairJoin(code){
+  return new Promise(async ok => {
+    const L = await lobbyOf(code), id = M.id; let iv = 0, done = false;
+    const c = mqtt.connect(CONFIG.MESH.BROKER, { clientId: 'yp-' + id, connectTimeout: 8000 });
+    const fin = v => { if (done) return; done = true; clearInterval(iv); try { c.end(true); } catch(e){} ok(v); };
+    c.on('connect', () => { c.subscribe(L.topic + '/grant'); const send = async () => c.publish(L.topic + '/join', await pSeal(L, { t: 'join', id, role: FLAVOR })); send(); iv = setInterval(send, 2500); setTimeout(() => fin(null), 25000); });
+    c.on('message', async (t, pl) => { try { const m = await pOpen(L, pl.toString()); if (m.t === 'grant' && m.to === id && Math.abs(Date.now() - m.ts) < 60000 && m.room) fin(String(m.room).slice(0, 40)); } catch(e){} });
+  });
+}
+async function pairTry(raw){
+  const code = normCode((String(raw).match(/pair=([A-Za-z0-9-]+)/) || [0, raw])[1]);
+  if (code.length !== 10) return pairSay('Kod 10 karakterden oluşmalı.');
+  if (!window.mqtt) return pairSay('Ağ modülü yükleniyor, birkaç saniye sonra tekrar dene.');
+  pairSay('Komuta merkezi aranıyor…'); const room = await pairJoin(code);
+  if (!room) return pairSay('Bağlanılamadı: kod hatalı, süresi dolmuş veya komuta merkezi kapalı.');
+  try { localStorage.setItem('meshCode', room); } catch(e){}
+  pairSay('✅ Eşleşti, başlatılıyor…'); setTimeout(() => { location.href = location.pathname; }, 700);
+}
+function pairUi(preset){ $('#pairBox').classList.add('on'); if (preset){ $('#pairIn').value = preset; pairTry(preset); } }
+$('#pairGo').onclick = () => pairTry($('#pairIn').value);
+$('#pairQr').onclick = async () => {
+  if (pairStop){ pairStop(); return; }
+  if (!('BarcodeDetector' in window)) return pairSay('Bu cihaz uygulama içi QR okumayı desteklemiyor. Telefon kamerasıyla QR okutup açılan bağlantıyı kullan.');
+  const own = FLAVOR !== 'cam', v = own ? $('#pairV') : $('#cam'); let tmp = null, live = true;
+  if (own){ try { tmp = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); v.srcObject = tmp; v.hidden = false; await v.play(); } catch(e){ return pairSay('Kamera açılamadı.'); } }
+  $('#pairBox').style.background = own ? '' : 'rgba(5,8,12,.2)'; pairSay('QR kodu kameraya göster…');
+  pairStop = () => { live = false; pairStop = null; if (tmp) tmp.getTracks().forEach(t => t.stop()); if (own) v.hidden = true; $('#pairBox').style.background = ''; };
+  const d = new BarcodeDetector({ formats: ['qr_code'] });
+  while (live){ try { const r = await d.detect(v); if (r[0]){ pairStop(); pairTry(r[0].rawValue); return; } } catch(e){} await new Promise(r => setTimeout(r, 300)); }
+};
+
+function tactical(){
+  document.body.classList.add('view'); $('#ccX').style.display = 'none'; $('#cc header b').textContent = '👁 Saha İzleyicisi (Salt Okunur)';
+  $('#ccAddr').readOnly = true; $('#ccSchool').contentEditable = 'false'; $('#ccLogoIn').disabled = true;
+  const css = document.createElement('style');
+  css.textContent = '.tdr{position:fixed;top:0;right:0;bottom:0;width:min(88vw,340px);z-index:9;padding:14px;overflow:auto;transform:translateX(105%);transition:transform .25s;display:grid;gap:10px;align-content:start;font-size:12px}.tdr.open{transform:none}.tdr h3{font-size:14px;display:flex;justify-content:space-between;align-items:center}.tdr details{border:1px solid var(--line);border-radius:12px;padding:8px}.tdr summary{cursor:pointer;font-weight:600;padding:2px 0}.tdr pre{white-space:pre-wrap;max-height:30vh;overflow:auto;font-size:11px;color:var(--mute);margin-top:6px}.tdr input{width:100%;padding:8px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.35);color:var(--text);margin-top:6px}.tdr .row{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.tdr .btn{padding:7px 10px;font-size:12px}.lockv{position:fixed;inset:0;z-index:20;background:#000;display:none;cursor:none}.lockv.on{display:block}.pinbox{position:fixed;inset:0;z-index:25;display:none;place-items:center;background:rgba(0,0,0,.6)}.pinbox.on{display:grid}.pinbox>div{padding:18px;border-radius:18px;display:grid;gap:10px;width:min(86vw,300px)}.pinbox input{padding:10px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.4);color:var(--text);font-size:18px;text-align:center}';
+  document.head.appendChild(css);
+  const dr = document.createElement('aside'), tb = document.createElement('button');
+  dr.className = 'tdr glass'; dr.innerHTML = '<h3>🛡️ Salt Okunur Görünüm <button class="btn ghost" id="vX">✕</button></h3><details open><summary>📡 Ağ Matrisi</summary><pre id="tNet"></pre></details><details open><summary>🔥 Tehdit Isı Haritası</summary><div id="tHeat"></div></details>';
+  document.body.appendChild(dr); tb.className = 'btn ghost'; tb.textContent = '☰ İzleme'; $('#cc header').insertBefore(tb, $('#ccX'));
+  const fill = () => { const ps = [...M.peers.values()]; $('#tNet').textContent = ps.length ? ps.map(p => (p.role === 'cam' ? '📷 ' : '🖥️ ') + pname(p) + '\n   gecikme ' + (p.ping != null ? p.ping + ' ms' : '—') + ' · AI ' + ((p.tel || {}).ms ?? '—') + ' ms / ' + ((p.tel || {}).fps ?? '—') + ' FPS').join('\n') : 'Bağlı cihaz yok'; heatUi($('#tHeat')); };
+  let ft = 0; const open = on => { dr.classList.toggle('open', on); clearInterval(ft); if (on){ fill(); ft = setInterval(fill, 2000); } };
+  tb.onclick = () => open(!dr.classList.contains('open')); dr.querySelector('#vX').onclick = () => open(false);
+}
+
+tactical(); viewerInit();
+initExtras(); resize();
+})();
+</script>
+</body>
+</html>
