@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070c11">
+<title>Saha İzleyici</title>
+
+<style>
+:root{
+  --bg:#070c11; --glass:rgba(9,15,21,.74); --line:rgba(150,185,210,.18);
+  --text:#e9f1f6; --mute:#8fa3b3; --green:#34f5a0; --red:#ff4757;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--text);overflow:hidden;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#cam,#ov{position:fixed;inset:0;width:100%;height:100%}
+#cam{object-fit:cover;background:var(--bg)}
+#ov{pointer-events:none}
+
+.glass{background:var(--glass);border:1px solid var(--line);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.banner{position:fixed;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 12px);
+  max-width:calc(100% - 24px);padding:9px 16px;border-radius:999px;font-size:14px;font-weight:600;
+  letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.hud{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);
+  padding:12px 14px;border-radius:18px;display:grid;gap:10px}
+.stats{display:flex;align-items:center;gap:18px;font-variant-numeric:tabular-nums}
+.stat b{font-size:20px;font-weight:700}
+.stat span{font-size:12px;color:var(--mute);margin-left:4px}
+.stats .btn{margin-left:auto}
+.conf{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--mute)}
+.conf input{flex:1;accent-color:var(--green)}
+.conf output{width:3ch;text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
+
+.alarm{position:fixed;inset:0;pointer-events:none;opacity:0;
+  box-shadow:inset 0 0 0 5px var(--red),inset 0 0 70px rgba(255,71,87,.5)}
+.alarm.on{opacity:1;animation:blink .8s ease-in-out infinite alternate}
+@keyframes blink{from{opacity:.35}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.alarm.on{animation:none}}
+.banner.threat{background:rgba(255,71,87,.92);border-color:var(--red);color:#fff}
+.trk{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+.trk b{color:var(--text);font-size:14px}
+.info{font-size:11px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.banner.warn{background:rgba(255,176,46,.92);border-color:#ffb02e;color:#1a1000}
+.stage{display:flex;gap:6px;font-size:12px;font-weight:600}
+.stage span{flex:1;text-align:center;padding:6px 4px;border-radius:10px;border:1px solid var(--line);color:var(--mute);white-space:nowrap}
+.stage span.on{color:var(--green);border-color:var(--green);background:rgba(52,245,160,.1)}
+.stage span.on[data-s="1"]{color:#ffb02e;border-color:#ffb02e;background:rgba(255,176,46,.12)}
+.stage span.on[data-s="2"]{color:#fff;border-color:var(--red);background:var(--red)}
+  border-radius:14px;border-color:var(--red);display:none;gap:6px;box-shadow:0 0 24px rgba(255,71,87,.35)}
+@keyframes drain{to{transform:scaleX(0)}}
+.camhud{position:fixed;left:12px;top:calc(env(safe-area-inset-top,0px) + 62px);padding:7px 10px;border-radius:12px;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums}
+.camhud b{font-size:13px;user-select:none}.rec{color:var(--red);animation:rec 1.2s steps(2) infinite}
+@keyframes rec{50%{opacity:.2}}
+.tools{display:flex;gap:6px;flex-wrap:wrap}.tools .btn{padding:7px 10px;font-size:12px}
+#cam.night{filter:brightness(1.8) contrast(1.3) saturate(.6)}
+  background:rgba(190,24,40,.94);border:1px solid #ff8a95;display:grid;gap:8px}
+.sheet{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:7;width:min(92vw,400px);max-height:80vh;overflow:auto;
+  padding:16px;border-radius:18px;display:grid;gap:10px;font-size:13px}
+.sheet h2{font-size:16px;display:flex;justify-content:space-between;align-items:center}
+.sheet input,.sheet textarea{width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.35);color:var(--text);font:12px ui-monospace,monospace}
+.sheet .row{display:flex;flex-wrap:wrap;gap:6px}
+.ev{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:12px}.ev img{width:64px;height:64px;object-fit:cover;border-radius:8px;background:#000}.ev div{white-space:pre-line}
+.hud{bottom:calc(env(safe-area-inset-bottom,0px) + 64px);max-height:62vh;overflow:auto}.hud[hidden]{display:none}
+.gear{position:fixed;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);width:44px;height:44px;padding:0;border-radius:50%;font-size:18px;color:var(--text);cursor:pointer}
+.sign{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);padding:6px 14px;border-radius:999px;
+  font-size:11px;letter-spacing:.04em;color:var(--mute);text-decoration:none;white-space:nowrap;background:rgba(9,15,21,.5)}
+.toast{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 64px);padding:10px 14px;border-radius:14px;font-size:12px;line-height:1.5;z-index:5}
+.btn:not(.ghost){border-color:rgba(255,255,255,.35)}
+.cc{position:fixed;inset:0;z-index:8;background:#05080c;display:flex;flex-direction:column}.cc[hidden]{display:none}
+.cc header{display:flex;gap:14px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);font-size:13px}.cc header b{flex:1}
+.ccMain{flex:1;display:flex;min-height:0}
+.ccGrid{flex:1;display:flex;flex-wrap:wrap;gap:6px;padding:6px;align-content:flex-start;overflow:auto}#ccEmpty{margin:auto;color:var(--mute);font-size:14px}
+.tile{position:relative;flex:1 1 44%;height:44vh;background:#000;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.tile video,.tile canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.tile .cap{position:absolute;left:8px;bottom:6px;font-size:12px;font-weight:600;text-shadow:0 1px 3px #000}
+.cc.alarmOn .tile{flex:1 1 150px;height:92px}.cc.alarmOn .tile.hot{flex:1 1 100%;height:58vh;border:2px solid var(--red)}
+.btn{display:inline-block;padding:9px 14px;border-radius:12px;border:1px solid var(--line);
+  background:rgba(255,255,255,.1);color:var(--text);font:600 13px system-ui,sans-serif;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--text)}
+
+.panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(88vw,360px);
+  padding:22px;border-radius:20px;display:grid;gap:12px;text-align:left}
+.panel[hidden]{display:none}
+.panel h2{font-size:18px}
+.panel p{font-size:14px;line-height:1.5;color:var(--mute)}
+.panel .row{display:flex;flex-wrap:wrap;gap:8px}
+
+.banner[hidden]{display:none}.toast{z-index:9}
+.hud{overflow-x:hidden}
+.hud.slup{animation:slup .34s cubic-bezier(.2,.8,.2,1)}
+.hud.sldn{animation:sldn .28s cubic-bezier(.5,0,.8,.4) forwards}
+@keyframes slup{from{transform:translateY(115%);opacity:0}to{transform:none;opacity:1}}
+@keyframes sldn{from{transform:none;opacity:1}to{transform:translateY(115%);opacity:0}}
+.pgs{display:grid;overflow:hidden}
+.pg{grid-area:1/1;min-width:0;display:grid;gap:10px;align-content:start;font-size:13px}
+.pg[hidden]{display:none}
+.pg.inR{animation:inR .3s cubic-bezier(.2,.8,.2,1)}.pg.inL{animation:inL .3s cubic-bezier(.2,.8,.2,1)}
+.pg.outL{animation:outL .3s cubic-bezier(.2,.8,.2,1) forwards}.pg.outR{animation:outR .3s cubic-bezier(.2,.8,.2,1) forwards}
+@keyframes inR{from{transform:translateX(100%)}to{transform:none}}
+@keyframes inL{from{transform:translateX(-100%)}to{transform:none}}
+@keyframes outL{to{transform:translateX(-100%)}}
+@keyframes outR{to{transform:translateX(100%)}}
+@media (prefers-reduced-motion:reduce){.hud,.pg{animation:none!important}.pg.outL,.pg.outR{visibility:hidden}}
+.phd,.pg h2{display:flex;align-items:center;gap:10px}.phd{justify-content:space-between;font-size:15px}.pg h2{font-size:16px}
+#net input,#hist input{width:100%;padding:9px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.35);color:var(--text);font:12px ui-monospace,monospace}
+.pg .row{display:flex;flex-wrap:wrap;gap:6px}
+.brand{display:flex;align-items:center;gap:12px;padding:8px 14px;background:linear-gradient(90deg,#0a2447,#11407a 55%,#0a2447);border-bottom:2px solid #d4a935}
+.brand .logo{width:44px;height:44px;flex:none;border-radius:50%;border:2px solid #d4a935;background:rgba(255,255,255,.12);display:grid;place-items:center;overflow:hidden;cursor:pointer;font-size:22px}
+.brand .logo img{width:100%;height:100%;object-fit:contain;background:#fff}
+.brand .nm{font-weight:700;font-size:15px;letter-spacing:.02em;outline:none;min-width:0}.brand small{color:#b8cde6;font-size:11px}
+.ccGrid{position:relative}.tile{cursor:zoom-in;-webkit-user-select:none;user-select:none}.tile.big{cursor:zoom-out}
+.tile .cap{top:6px;bottom:auto}
+.tile video.night{filter:brightness(1.8) contrast(1.3) saturate(.6)}
+.hlth{position:absolute;right:8px;top:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(0,0,0,.62);border:1px solid var(--line);font-variant-numeric:tabular-nums}
+.hlth.bad{border-color:var(--red);color:#ff8a95}
+.ccGrid.hasBig{overflow:hidden}.ccGrid.hasBig .tile:not(.big){display:none}
+.cc .ccGrid .tile.big{position:absolute;inset:0;z-index:3;height:auto!important;flex:none;border-radius:0;touch-action:none}
+.evp{flex:0 0 min(34vw,320px);display:flex;flex-direction:column;min-height:0;overflow:auto;background:#0a1016;border-left:1px solid var(--line);font-size:12px}
+.evp h3{padding:10px 12px 6px;font-size:13px;display:flex;justify-content:space-between;gap:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.4px}
+.evp h3 span{color:var(--mute);font-weight:400}
+#evList{flex:1 1 auto;min-height:120px;overflow:auto;padding:0 8px 8px}
+#evList:empty::before{content:'Henüz olay yok';color:var(--mute);display:block;padding:8px}
+.evi{padding:7px 9px;margin-bottom:6px;border-left:3px solid var(--mute);background:rgba(255,255,255,.04)}
+.evi b{display:block;font-size:12px}.evi small{color:var(--mute)}
+.evi.aud{border-color:#ffb02e}.evi.vis{border-color:var(--red)}.evi.fus{border-color:var(--red);background:rgba(255,71,87,.16)}
+#nmSvg{width:100%;height:auto;max-height:240px;padding:0 8px 10px}
+#ccLink{color:var(--mute)}
+@media (max-width:640px){.evp{flex-basis:44vw}}
+</style>
+</head>
+<body>
+<section class="cc view" id="cc" hidden>
+  <div class="brand"><div><div class="nm">Hüseyin Celal Yardımcı Fen Lisesi - Güvenlik İzleme</div><small>Salt okunur izleme arayüzü</small></div></div>
+  <header><b>SAHA İZLEYİCİSİ (SALT OKUNUR)</b><span id="ccInfo">0 kamera</span><span id="ccLink"></span><span id="ccClock"></span></header>
+  <div class="ccMain"><div class="ccGrid" id="ccGrid"><div id="ccEmpty">Bağlı kamera yok. Komuta merkezindeki eşleşme kodu ile bağlan.</div></div>
+    <aside class="evp" id="evp"><h3>Ses ve Tehdit Bildirimleri <span id="evCnt">Ses 0 · Görsel 0</span></h3><div id="evList"></div>
+      <h3>Ağ Haritası</h3><svg id="nmSvg" viewBox="0 0 260 220" role="img" aria-label="Ağ haritası"></svg></aside></div>
+</section>
+<div class="toast glass" id="toast" hidden></div>
+<a class="sign glass" href="https://instagram.com/dgnemre_04" target="_blank" rel="noopener noreferrer">Developed by: @dgnemre_04</a>
+<script>
+(() => {
+'use strict';
+
+const CONFIG = { MESH: { BROKER: 'wss://broker.emqx.io:8084/mqtt', ICE: [{ urls: 'stun:stun.l.google.com:19302' }] } };
+
+const $ = s => document.querySelector(s) || document.createElement('div');
+
+let toastT = 0;
+function toast(msg, ms = 8000){ const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
+
+function loadScript(src){
+  return new Promise((ok, fail) => {
+    const s = document.createElement('script'); s.src = src;
+    s.onload = ok; s.onerror = () => fail(new Error('Yüklenemedi: ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+const buzz = () => navigator.vibrate && navigator.vibrate([300, 100, 300, 100, 600]);
+
+const safeImg = v => typeof v === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]{0,200000}$/.test(v) ? v : '';
+
+const M = { id: Math.random().toString(36).slice(2, 12), n: 0, loc: '', role: 'cam', code: '', peers: new Map(), seen: new Set(), cli: null, key: null, topic: '' };
+const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const camName = () => M.role === 'master' ? 'Komuta' : 'Kamera ' + (M.n || '?') + (M.loc ? ' - ' + M.loc : '');
+const pname = p => 'Kamera ' + p.n + (p.loc ? ' - ' + p.loc : '');
+const hh = () => new Date().toLocaleTimeString('tr-TR');
+const b64 = u => btoa(String.fromCharCode(...u)), unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+async function mkKey(code){
+  const E = new TextEncoder(), base = await crypto.subtle.importKey('raw', E.encode(code), 'PBKDF2', false, ['deriveKey']);
+  M.key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: E.encode('yolo-mesh-v1'), iterations: 100000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', E.encode('topic:' + code)));
+  M.topic = 'yolomesh/' + [...d.slice(0, 8)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+async function seal(o){ const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, M.key, new TextEncoder().encode(JSON.stringify({ ...o, from: M.id, ts: Date.now() }))));
+  return b64(iv) + '.' + b64(ct); }
+async function unseal(t){ const [a, c] = t.split('.');
+  return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(a) }, M.key, unb64(c)))); }
+const pub = async (to, o) => { if (M.cli && M.cli.connected) M.cli.publish(M.topic + (to ? '/to/' + to : '/all'), await seal(o)); };
+const announce = () => pub(null, { t: 'hi', n: M.n, loc: M.loc, role: M.role });
+const peer = id => M.peers.get(id) || (M.peers.set(id, { id, n: 0, loc: '', role: 'cam', ts: Date.now(), pc: null, dc: null, stream: null }), M.peers.get(id));
+function resetPeer(p){ try { p.pc && p.pc.close(); } catch(e){} p.pc = p.dc = p.stream = null; }
+const shouldInit = p => M.role === 'cam' && p.role === 'master' ? true : M.role === 'master' && p.role === 'cam' ? false : M.id < p.id;
+const gathered = pc => pc.iceGatheringState === 'complete' ? 0 : new Promise(ok => {
+  pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && ok()); setTimeout(ok, 2500); });
+function mkPc(p){
+  const pc = p.pc = new RTCPeerConnection({ iceServers: CONFIG.MESH.ICE });
+  pc.onconnectionstatechange = () => { if (['failed', 'closed', 'disconnected'].includes(pc.connectionState) && p.pc === pc){ resetPeer(p); peersUi(); gridUi(); } };
+  pc.ontrack = e => { if (e.track.kind === 'audio') return; p.stream = e.streams[0]; gridUi(); };
+  return pc;
+}
+function wire(dc, p){
+  dc.onopen = () => { p.dc = dc; peersUi(); };
+  dc.onclose = () => { if (p.dc === dc) p.dc = null; peersUi(); };
+  dc.onmessage = e => { try { onData(JSON.parse(e.data), p); } catch(err){} };
+}
+async function onSig(m){
+  if (m.from === M.id || Math.abs(Date.now() - m.ts) > 60000) return;
+  const p = peer(m.from);
+  if (m.t === 'hi'){
+    const role = m.role === 'master' ? 'master' : 'cam';
+    if (p.role !== role) resetPeer(p);
+    Object.assign(p, { role, n: Math.max(0, Math.min(99, +m.n || 0)), loc: String(m.loc || '').slice(0, 60), ts: Date.now() });
+    if (!p.pc && shouldInit(p)) connect(p);
+    peersUi(); gridUi();
+  } else if (m.t === 'offer'){
+    resetPeer(p); const pc = mkPc(p); pc.ondatachannel = e => wire(e.channel, p);
+    await pc.setRemoteDescription(m.sdp);
+    await pc.setLocalDescription(await pc.createAnswer()); await gathered(pc);
+    pub(p.id, { t: 'answer', sdp: pc.localDescription });
+  } else if (m.t === 'answer' && p.pc && p.pc.signalingState === 'have-local-offer') await p.pc.setRemoteDescription(m.sdp);
+}
+async function meshStart(){
+  await mkKey(M.code);
+  const c = M.cli = mqtt.connect(CONFIG.MESH.BROKER, { clientId: 'ym-' + M.id, reconnectPeriod: 3000, connectTimeout: 8000 });
+  c.on('connect', () => { c.subscribe(M.topic + '/all'); c.subscribe(M.topic + '/to/' + M.id); announce(); peersUi(); });
+  c.on('message', async (t, pl) => { try { await onSig(await unseal(pl.toString())); } catch(e){} });
+  c.on('close', peersUi);
+  setInterval(announce, 5000);
+  setInterval(() => { const now = Date.now(); for (const [id, p] of M.peers) if (now - p.ts > 16000){ resetPeer(p); M.peers.delete(id); } peersUi(); gridUi(); }, 3000);
+}
+function sendMasters(o){ const j = JSON.stringify(o); for (const p of M.peers.values()) if (p.role === 'master' && p.dc && p.dc.readyState === 'open') p.dc.send(j); }
+function bcast(m){ M.seen.add(m.id); const j = JSON.stringify(m); for (const p of M.peers.values()) if (p.dc && p.dc.readyState === 'open') p.dc.send(j); }
+
+function clean(m){
+  const n = (v, d = 0) => Number.isFinite(+v) ? +v : d, t = (v, l = 40) => String(v == null ? '' : v).slice(0, l);
+  const g = m.gps && Number.isFinite(+m.gps.lat) && Number.isFinite(+m.gps.lon) ? { lat: +m.gps.lat, lon: +m.gps.lon } : null;
+  return { id: t(m.id), type: 'alarm', dev: t(m.dev, 80), label: t(m.label), score: n(m.score), ts: n(m.ts, Date.now()), gps: g, snap: safeImg(m.snap), test: !!m.test, pt: rgb3(m.pt), pb: rgb3(m.pb), attr: t(m.attr, 140), psn: safeImg(m.psn), frm: safeImg(m.frm), late: !!m.late, fused: !!m.fused };
+}
+
+const tiles = new Map();
+function gridUi(){
+  const g = $('#ccGrid'), ps = [...M.peers.values()].filter(p => p.role === 'cam' && p.stream);
+  for (const [id, t] of tiles) if (!ps.some(p => p.id === id)){ if (t.el.classList.contains('big')) g.classList.remove('hasBig'); t.el.remove(); tiles.delete(id); }
+  for (const p of ps){
+    let t = tiles.get(p.id);
+    if (!t){ t = mkTile(p); t.v.srcObject = p.stream; g.append(t.el); tiles.set(p.id, t); }
+    else if (t.v.srcObject !== p.stream) t.v.srcObject = p.stream;
+    t.cap.textContent = pname(p); t.el.style.order = p.n; tileUi(p);
+  }
+  $('#ccInfo').textContent = ps.length + ' kamera'; $('#ccEmpty').style.display = ps.length ? 'none' : '';
+  fitSingle();
+}
+function drawBoxes(t, c){
+  const cv = t.c, w = cv.clientWidth, h = cv.clientHeight; if (cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; }
+  const x = cv.getContext('2d'); x.clearRect(0, 0, w, h); if (!c) return;
+  const k = Math.max(w / c.vw, h / c.vh), ox = (w - c.vw * k) / 2, oy = (h - c.vh * k) / 2;
+  x.strokeStyle = x.fillStyle = '#ff4757'; x.lineWidth = 4; x.font = '600 13px system-ui,sans-serif';
+  for (const b of c.boxes){ const X = b[0] * c.vw * k + ox, Y = b[1] * c.vh * k + oy;
+    x.strokeRect(X, Y, (b[2] - b[0]) * c.vw * k, (b[3] - b[1]) * c.vh * k); x.fillText(c.label, X + 4, Y > 16 ? Y - 5 : Y + 14); }
+}
+
+function peersUi(){
+  const ps = [...M.peers.values()], up = ps.filter(p => p.dc && p.dc.readyState === 'open').length;
+  $('#ccLink').textContent = (M.cli && M.cli.connected ? 'Ağ bağlı' : 'Ağ bağlanıyor') + ' · ' + up + '/' + ps.length + ' düğüm';
+}
+async function connect(p){
+  const pc = mkPc(p);
+  wire(pc.createDataChannel('m'), p);
+  await pc.setLocalDescription(await pc.createOffer()); await gathered(pc);
+  pub(p.id, { t: 'offer', sdp: pc.localDescription });
+}
+const INC = { cams: new Map() };
+function onData(m, p){
+  if (!m || typeof m !== 'object' || p.role !== 'cam') return;
+  if (m.type === 'alarm'){
+    if (typeof m.id !== 'string' || M.seen.has(m.id)) return; M.seen.add(m.id);
+    ccAlarm(clean(m), p);
+  } else if (m.type === 'thr') ccThr(m, p);
+  else if (m.type === 'esp') ccEsp(m, p);
+  else ccRemote(m, p);
+}
+function setRole(){
+  M.role = 'master'; $('#cc').hidden = false;
+  for (const p of M.peers.values()) resetPeer(p);
+  announce(); peersUi(); gridUi();
+}
+function ccThr(m, p){
+  const bx = (Array.isArray(m.boxes) ? m.boxes : []).slice(0, 6).map(b => Array.isArray(b) && b.length === 4 ? b.map(v => Math.max(0, Math.min(1, +v || 0))) : null).filter(Boolean);
+  const c = INC.cams.get(p.id) || {}; INC.cams.set(p.id, c);
+  Object.assign(c, { vw: Math.max(1, +m.vw || 640), vh: Math.max(1, +m.vh || 480), label: String(m.label || '').slice(0, 30), boxes: bx });
+  if (bx.length){ heatAdd(p.id, 1); c.seen = Date.now(); }
+}
+function ccAlarm(m, p){
+  heatAdd(p && p.id, 5); buzz();
+  const c = INC.cams.get(p.id) || { boxes: [], vw: 640, vh: 480, label: m.label }; INC.cams.set(p.id, c); c.seen = Date.now();
+  const fused = !!m.fused || evFused(p);
+  evAdd(fused ? 'fus' : 'vis', (fused ? 'SES VE GÖRSEL ONAY: ' : m.test ? 'TATBİKAT: ' : 'GÖRSEL ALARM: ') + m.label + ' (%' + Math.round(m.score * 100) + ')', pname(p), m.ts);
+}
+function ccRemote(m, p){
+  if (m.type === 'ac'){ evAdd('aud', 'AKUSTİK UYARI: ' + String(m.why || '').slice(0, 40) + ' (' + (+m.db || 0) + ' dB)', pname(p), Date.now()); return acPulse(p.id, m); }
+  if (m.type === 'tel') return telUi(p.id, m);
+  if (m.type === 'state'){
+    const n = (v, a, b, d) => Number.isFinite(+v) ? Math.max(a, Math.min(b, +v)) : d;
+    p.st = { night: !!m.night, zoom: n(m.zoom, 1, 4, 1), bat: Math.round(n(m.bat, -1, 100, -1)), chg: !!m.chg, fps: Math.round(n(m.fps, 0, 999, 0)) };
+    p.stAt = Date.now(); tileUi(p);
+  }
+}
+function mkTile(p){
+  const el = document.createElement('div'); el.className = 'tile';
+  el.innerHTML = '<video autoplay muted playsinline></video><canvas></canvas><div class="cap"></div><div class="hlth"></div>';
+  const q = s => el.querySelector(s), t = { el, v: q('video'), c: q('canvas'), cap: q('.cap'), hl: q('.hlth') };
+  el.ondblclick = () => {
+    const on = !el.classList.contains('big'), g = $('#ccGrid');
+    tiles.forEach(x => x.el.classList.remove('big')); el.classList.toggle('big', on); g.classList.toggle('hasBig', on); g.scrollTop = 0; fitSingle();
+  };
+  return t;
+}
+function tileUi(p){
+  const t = tiles.get(p.id); if (!t) return;
+  const s = p.st || { night: false, zoom: 1, bat: -1, chg: false, fps: 0 }, stale = !p.stAt || Date.now() - p.stAt > 7000;
+  t.v.classList.toggle('night', !!s.night);
+  t.v.style.transform = t.c.style.transform = s.zoom > 1 ? 'scale(' + s.zoom + ')' : '';
+  t.hl.textContent = stale ? 'veri yok' : (s.bat < 0 ? 'pil -' : (s.chg ? 'şarj %' : 'pil %') + s.bat) + ' · ' + s.fps + ' FPS';
+  t.hl.classList.toggle('bad', stale || (s.bat >= 0 && s.bat < 20 && !s.chg));
+}
+function netMap(){
+  const s = $('#nmSvg'), cx = 130, cy = 110, ns = 'http://www.w3.org/2000/svg', now = Date.now();
+  const cams = [...M.peers.values()].filter(p => p.role === 'cam');
+  s.textContent = '';
+  const el = (t, a) => { const e = document.createElementNS(ns, t); for (const k in a) e.setAttribute(k, a[k]); s.append(e); return e; };
+  cams.forEach((p, i) => {
+    const ang = i / Math.max(1, cams.length) * Math.PI * 2 - Math.PI / 2, x = cx + Math.cos(ang) * 82, y = cy + Math.sin(ang) * 72;
+    const up = !!(p.dc && p.dc.readyState === 'open'), c = INC.cams.get(p.id), al = (ESPSEEN.get(p.id) && now - ESPSEEN.get(p.id) < 20000) || !!(c && c.seen && now - c.seen < 3500);
+    const col = al ? '#ff4757' : up ? '#34f5a0' : '#8fa3b3';
+    el('line', { x1: cx, y1: cy, x2: x, y2: y, stroke: col, 'stroke-width': up ? 2 : 1, 'stroke-dasharray': up ? '0' : '4 4', opacity: .7 });
+    el('circle', { cx: x, cy: y, r: 9, fill: '#05080c', stroke: col, 'stroke-width': 2 });
+    const t = el('text', { x, y: y + 23, 'text-anchor': 'middle', fill: '#e9f1f6', 'font-size': 10 }); t.textContent = (p.loc || 'Kamera ' + (p.n || '?')).slice(0, 18);
+  });
+  el('circle', { cx, cy, r: 14, fill: '#0a2447', stroke: '#d4a935', 'stroke-width': 2 });
+  const t = el('text', { x: cx, y: cy + 3, 'text-anchor': 'middle', fill: '#fff', 'font-size': 8 }); t.textContent = 'IZLEME';
+}
+setInterval(() => {
+  if (M.role !== 'master') return;
+  const now = Date.now(); let any = false;
+  for (const [id, t] of tiles){ const c = INC.cams.get(id), live = !!(c && c.seen && now - c.seen < 3500);
+    any = any || live; t.el.classList.toggle('hot', live); drawBoxes(t, live && now - c.seen < 1200 ? c : null); }
+  $('#cc').classList.toggle('alarmOn', any);
+  $('#ccClock').textContent = new Date().toLocaleTimeString('tr-TR');
+}, 250);
+function initExtras(){
+  const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch(e){} return null; };
+  setRole();
+  M.code = ls('meshCode') || '';
+  setInterval(netMap, 2000);
+  setInterval(() => { for (const p of M.peers.values()) tileUi(p); }, 2000);
+  peersUi(); netMap();
+  loadScript('https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js').then(() => { if (M.code) meshStart(); if (!M.code || PAIRQ) pairUi(PAIRQ); })
+    .catch(() => { $('#ccLink').textContent = 'Mesh kapalı: internet / MQTT erişimi gerekli'; });
+}
+const EV = { a: 0, v: 0 };
+const ESPSEEN = new Map();
+function evAdd(kind, title, sub, ts){
+  const l = $('#evList'), e = document.createElement('div'), b = document.createElement('b'), s = document.createElement('small');
+  e.className = 'evi ' + kind; b.textContent = title;
+  s.textContent = new Date(ts || Date.now()).toLocaleTimeString('tr-TR') + ' · ' + sub;
+  e.append(b, s); l.prepend(e);
+  while (l.children.length > 80) l.lastChild.remove();
+  if (kind === 'aud') EV.a++; else EV.v++;
+  $('#evCnt').textContent = 'Ses ' + EV.a + ' · Görsel ' + EV.v;
+  if (kind !== 'aud') tl(title + ' - ' + sub);
+}
+function ccEsp(m, p){
+  const db = Math.max(0, Math.min(140, Math.round(+m.db || 0))), kind = String(m.kind || 'tehlikeli ses').slice(0, 40);
+  const ts = Number.isFinite(+m.ts) ? +m.ts : Date.now();
+  ESPSEEN.set(p.id, Date.now()); heatAdd(p.id, 3); acPulse(p.id, { why: kind, db });
+  evAdd('aud', 'SES ALARMI: ' + kind + ' (' + db + ' dB)', pname(p), ts);
+  if (typeof INC.on !== 'undefined' && INC.on && typeof ccAppend === 'function') ccAppend('Ses düğümü alarmı: ' + kind + ' (' + db + ' dB) [' + pname(p) + ']');
+  buzz();
+}
+const evFused = p => !!(p && ESPSEEN.get(p.id) && Date.now() - ESPSEEN.get(p.id) < 20000);
+const TL = (() => { try { return JSON.parse(localStorage.getItem('tlog') || '[]'); } catch(e){ return []; } })();
+function tl(msg){ TL.push({ ts: Date.now(), msg }); if (TL.length > 300) TL.shift(); try { localStorage.setItem('tlog', JSON.stringify(TL)); } catch(e){} }
+const HEAT = new Map();
+document.head.insertAdjacentHTML('beforeend', '<style>.thermal{filter:url(#thF) contrast(1.2)!important}.acp{outline:2px solid var(--red)}.acp::before,.acp::after{content:"";position:absolute;left:50%;top:50%;width:140%;aspect-ratio:1;translate:-50% -50%;border-radius:50%;pointer-events:none;border:3px solid rgba(255,71,87,.85);box-shadow:0 0 24px rgba(255,71,87,.6);opacity:0;z-index:3;animation:acw 1.7s ease-out 3}.acp::after{animation-delay:.55s}@keyframes acw{0%{transform:scale(.1);opacity:.9}100%{transform:scale(1);opacity:0}}.hr{display:grid;grid-template-columns:90px 1fr;gap:6px;align-items:center;margin-top:6px}.hr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hr i{display:block;height:10px;border-radius:5px;transition:width .4s}#tQr{background:#fff;padding:6px;border-radius:10px;display:grid;place-items:center;margin-top:6px;color:#000;word-break:break-all}#tQr svg{width:100%;max-width:200px;height:auto}</style>');
+setInterval(() => { for (const [k, v] of HEAT) HEAT.set(k, v * .97); }, 2000);
+function heatAdd(id, w){ if (id) HEAT.set(id, (HEAT.get(id) || 0) + w); }
+function acPulse(id, m){
+  const t = tiles.get(id); if (!t) return;
+  t.el.classList.remove('acp'); void t.el.offsetWidth; t.el.classList.add('acp'); setTimeout(() => t.el.classList.remove('acp'), 5200);
+  heatAdd(id, 2); tl('Akustik radar: ' + (t.cap.textContent || id) + ' — ' + String(m.why || '').slice(0, 40) + ' (' + (+m.db || 0) + ' dB)');
+}
+const rgb3 = v => Array.isArray(v) && v.length === 3 && v.every(x => Number.isFinite(+x)) ? v.map(x => Math.max(0, Math.min(255, +x | 0))) : null;
+document.head.insertAdjacentHTML('beforeend', '<style>.tel{position:absolute;left:8px;bottom:26px;z-index:2;padding:3px 7px;border-radius:8px;background:rgba(0,0,0,.62);font:11px ui-monospace,monospace;color:#9ef;pointer-events:none;max-width:calc(100% - 16px);white-space:normal}</style>');
+function telUi(id, m){
+  const t = tiles.get(id), p = M.peers.get(id), n = v => Number.isFinite(+v) ? +v : 0; if (!t) return;
+  if (p) p.tel = { ms: n(m.ms), fps: n(m.fps) };
+  let e = t.el.querySelector('.tel'); if (!e){ e = document.createElement('div'); e.className = 'tel'; t.el.appendChild(e); }
+  e.textContent = '' + n(m.ms) + ' ms · ' + n(m.fps) + ' FPS · ' + (n(m.mem) >= 0 ? n(m.mem) + ' MB' : '—') + ' · ~%' + n(m.duty) + ' yük · ' + String(m.pw || '').slice(0, 14);
+}
+let VIEW = true;
+document.head.insertAdjacentHTML('beforeend', `<style>
+.cc header{flex-wrap:wrap;gap:6px}
+.glass{border:1px solid rgba(120,255,170,.18);box-shadow:0 8px 28px rgba(0,0,0,.5)}
+.cc header b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.6px;text-transform:uppercase}
+.tile{touch-action:manipulation}
+.ccGrid.single{align-content:center;justify-content:center}
+@media (max-width:640px){.cc header{font-size:12px}}
+</style>`);
+function fitSingle(){
+  const g = $('#ccGrid'), ts = [...tiles.values()], cs = getComputedStyle(g);
+  const cw = g.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), ch = g.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  g.classList.toggle('single', ts.length === 1);
+  for (const t of ts){
+    const v = t.v, st = t.el.style;
+    if (ts.length === 1 && v.videoWidth && cw > 0 && ch > 0 && !t.el.classList.contains('big')){
+      const k = Math.min(cw / v.videoWidth, ch / v.videoHeight); st.flex = '0 0 auto'; st.width = Math.floor(v.videoWidth * k) + 'px'; st.height = Math.floor(v.videoHeight * k) + 'px';
+    } else { st.flex = st.width = st.height = ''; }
+  }
+}
+['loadedmetadata', 'resize'].forEach(n => $('#ccGrid').addEventListener(n, fitSingle, true));
+new ResizeObserver(fitSingle).observe($('#ccGrid'));
+const PAIR_MS = 300000, ALPH = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const normCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const rnd = n => [...crypto.getRandomValues(new Uint8Array(n))].map(x => ALPH[x % ALPH.length]).join('');
+async function lobbyOf(c){
+  const E = new TextEncoder(), base = await crypto.subtle.importKey('raw', E.encode('pair:' + c), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: E.encode('yolo-pair-v1'), iterations: 50000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', E.encode('lobby:' + c)));
+  return { key, topic: 'yolomesh/p/' + [...d.slice(0, 8)].map(x => x.toString(16).padStart(2, '0')).join('') };
+}
+async function pSeal(L, o){ const iv = crypto.getRandomValues(new Uint8Array(12)); return b64(iv) + '.' + b64(new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, L.key, new TextEncoder().encode(JSON.stringify({ ...o, ts: Date.now() }))))); }
+async function pOpen(L, t){ const [a, c] = t.split('.'); return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(a) }, L.key, unb64(c)))); }
+const fmtCode = c => c.slice(0, 5) + '-' + c.slice(5);
+
+const PAIRQ = new URLSearchParams(location.search).get('pair') || '';
+let pairStop = null;
+document.head.insertAdjacentHTML('beforeend', '<style>#pairBox{position:fixed;inset:0;z-index:30;display:none;place-items:center;background:rgba(5,8,12,.85)}#pairBox.on{display:grid}#pairBox>div{padding:18px;border-radius:18px;display:grid;gap:10px;width:min(90vw,340px)}#pairBox input{padding:12px;border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.4);color:var(--text);font-size:18px;text-align:center;letter-spacing:2px;text-transform:uppercase}#pairBox video{width:100%;border-radius:12px}</style>');
+document.body.insertAdjacentHTML('beforeend', '<div id="pairBox"><div class="glass"><b>Komuta merkezine bağlan</b><small>Komuta merkezinde gösterilen eşleşme kodunu gir veya QR okut. Kod 5 dakika geçerlidir.</small><input id="pairIn" placeholder="XXXXX-XXXXX" autocapitalize="characters" autocomplete="off" maxlength="14"><button class="btn" id="pairGo">Bağlan</button><button class="btn ghost" id="pairQr">QR Okut</button><video id="pairV" playsinline muted hidden></video><small id="pairMsg"></small></div></div>');
+const pairSay = t => { $('#pairMsg').textContent = t; };
+function pairJoin(code){
+  return new Promise(async ok => {
+    const L = await lobbyOf(code), id = M.id; let iv = 0, done = false;
+    const c = mqtt.connect(CONFIG.MESH.BROKER, { clientId: 'yp-' + id, connectTimeout: 8000 });
+    const fin = v => { if (done) return; done = true; clearInterval(iv); try { c.end(true); } catch(e){} ok(v); };
+    c.on('connect', () => { c.subscribe(L.topic + '/grant'); const send = async () => c.publish(L.topic + '/join', await pSeal(L, { t: 'join', id, role: FLAVOR })); send(); iv = setInterval(send, 2500); setTimeout(() => fin(null), 25000); });
+    c.on('message', async (t, pl) => { try { const m = await pOpen(L, pl.toString()); if (m.t === 'grant' && m.to === id && Math.abs(Date.now() - m.ts) < 60000 && m.room) fin(String(m.room).slice(0, 40)); } catch(e){} });
+  });
+}
+async function pairTry(raw){
+  const code = normCode((String(raw).match(/pair=([A-Za-z0-9-]+)/) || [0, raw])[1]);
+  if (code.length !== 10) return pairSay('Kod 10 karakterden oluşmalı.');
+  if (!window.mqtt) return pairSay('Ağ modülü yükleniyor, birkaç saniye sonra tekrar dene.');
+  pairSay('Komuta merkezi aranıyor…'); const room = await pairJoin(code);
+  if (!room) return pairSay('Bağlanılamadı: kod hatalı, süresi dolmuş veya komuta merkezi kapalı.');
+  try { localStorage.setItem('meshCode', room); } catch(e){}
+  pairSay('Eşleşti, başlatılıyor…'); setTimeout(() => { location.href = location.pathname; }, 700);
+}
+function pairUi(preset){ $('#pairBox').classList.add('on'); if (preset){ $('#pairIn').value = preset; pairTry(preset); } }
+$('#pairGo').onclick = () => pairTry($('#pairIn').value);
+$('#pairQr').onclick = async () => {
+  if (pairStop){ pairStop(); return; }
+  if (!('BarcodeDetector' in window)) return pairSay('Bu cihaz uygulama içi QR okumayı desteklemiyor. Telefon kamerasıyla QR okutup açılan bağlantıyı kullan.');
+  const own = FLAVOR !== 'cam', v = own ? $('#pairV') : $('#cam'); let tmp = null, live = true;
+  if (own){ try { tmp = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); v.srcObject = tmp; v.hidden = false; await v.play(); } catch(e){ return pairSay('Kamera açılamadı.'); } }
+  $('#pairBox').style.background = own ? '' : 'rgba(5,8,12,.2)'; pairSay('QR kodu kameraya göster…');
+  pairStop = () => { live = false; pairStop = null; if (tmp) tmp.getTracks().forEach(t => t.stop()); if (own) v.hidden = true; $('#pairBox').style.background = ''; };
+  const d = new BarcodeDetector({ formats: ['qr_code'] });
+  while (live){ try { const r = await d.detect(v); if (r[0]){ pairStop(); pairTry(r[0].rawValue); return; } } catch(e){} await new Promise(r => setTimeout(r, 300)); }
+};
+
+initExtras();
+})();
+</script>
+</body>
+</html>
